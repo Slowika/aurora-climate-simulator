@@ -1,0 +1,7 @@
+numpy
+torch
+tqdm
+pytest
+zarr
+gcsfs
+git+https://github.com/Slowika/aurora.git@main
