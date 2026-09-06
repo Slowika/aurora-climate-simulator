@@ -5,7 +5,30 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from aurora import Aurora, Batch, Swin3DBlockAdapter, Swin3DResidualAdapter
+from aurora import Aurora, Batch
+
+
+class Swin3DResidualAdapter(nn.Module):
+    """Simple residual adapter: applies scale, shift, and gating."""
+
+    def __init__(self, scale, shift, gate):
+        super().__init__()
+        self.scale = nn.Parameter(scale)
+        self.shift = nn.Parameter(shift)
+        self.gate = nn.Parameter(gate)
+
+    def forward(self, x):
+        return x * (1 + self.scale * torch.sigmoid(self.gate)) + self.shift
+
+
+class Swin3DBlockAdapter(nn.Module):
+    """Per-block adapter with separate attention and MLP pathways."""
+
+    def __init__(self, attention, mlp):
+        super().__init__()
+        self.attention = attention
+        self.mlp = mlp
+
 
 __all__ = ["AuroraCS"]
 

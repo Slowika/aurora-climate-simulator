@@ -25,6 +25,11 @@ from huggingface_hub import hf_hub_download
 from aurora import Batch, Metadata
 from aurora_cs import AuroraCS
 
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 ZARR_URL = "gs://weatherbench2/datasets/hres_t0/2016-2022-6h-1440x721.zarr"
 CO2_URL = "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt"
 
@@ -204,18 +209,18 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
     cache_dir = Path(args.cache_dir)
     start = pd.Timestamp(args.start_date).to_pydatetime()
     num_history = 2  # Fixed: what the small pretrained checkpoint was trained with.
 
-    print("Fetching CO2 series...")
+    logger.info("Fetching CO2 series...")
     co2 = fetch_co2_series(cache_dir / "co2_mm_mlo.csv")
 
-    print(f"Loading HRES window starting {start} ({num_history} history + {args.steps} future)...")
+    logger.info(f"Loading HRES window starting {start} ({num_history} history + {args.steps} future)...")
     init_batch, future, times = load_hres_window(start, num_history, args.steps, cache_dir)
 
-    print("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
+    logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
     model = AuroraCS(
         encoder_depths=(2, 6, 2),
         encoder_num_heads=(4, 8, 16),
@@ -237,7 +242,7 @@ def main() -> None:
             batch = advance(batch, pred)
         return total
 
-    print("Baseline check: adapters are zero-init, so AuroraCS output must match raw Aurora.")
+    logger.info("Baseline check: adapters are zero-init, so AuroraCS output must match raw Aurora.")
     with torch.no_grad():
         adapted_loss = rollout_once()
 
@@ -248,19 +253,19 @@ def main() -> None:
             baseline_loss = baseline_loss + rollout_loss(pred, future[step])
             batch = advance(batch, pred)
 
-    print(f"  adapted (pre-training) loss = {adapted_loss.item():.6f}")
-    print(f"  raw-Aurora loss            = {baseline_loss.item():.6f}")
+    logger.info(f"  adapted (pre-training) loss = {adapted_loss.item():.6f}")
+    logger.info(f"  raw-Aurora loss            = {baseline_loss.item():.6f}")
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable_params, lr=args.lr)
 
-    print(f"Training for {args.iters} iterations...")
+    logger.info(f"Training for {args.iters} iterations...")
     for it in range(args.iters):
         optimizer.zero_grad()
         loss = rollout_once()
         loss.backward()
         optimizer.step()
-        print(f"  iter {it}: loss = {loss.item():.6f}")
+        logger.info(f"  iter {it}: loss = {loss.item():.6f}")
 
 
 if __name__ == "__main__":
