@@ -1,0 +1,29 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: evaluate_rollout
+version: 1
+display_name: Evaluate rollout
+type: command
+description: Compare rollout predictions against ERA5 ground truth and an optional baseline rollout.
+inputs:
+  predictions:
+    type: uri_folder
+    description: AuroraCS rollout predictions.
+  era5_data:
+    type: uri_folder
+    description: ERA5 archive holding the ground truth.
+  baseline_predictions:
+    type: uri_folder
+    optional: true
+    description: Optional raw-Aurora baseline rollout for comparison.
+outputs:
+  metrics:
+    type: uri_folder
+    description: Computed evaluation metrics/report.
+code: .
+environment: azureml:aurora-cs-pipeline-env@latest
+command: >-
+  python evaluate_rollout.py
+  --predictions ${{inputs.predictions}}
+  --era5-data ${{inputs.era5_data}}
+  $[[--baseline-predictions ${{inputs.baseline_predictions}}]]
+  --metrics ${{outputs.metrics}}
