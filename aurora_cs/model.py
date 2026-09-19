@@ -5,8 +5,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from aurora import Aurora, Batch, Swin3DResidualAdapter, Swin3DBlockAdapter
-
+from aurora import Aurora, Batch, Swin3DBlockAdapter, Swin3DResidualAdapter
 
 __all__ = ["AuroraCS"]
 

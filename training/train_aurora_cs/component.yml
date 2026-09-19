@@ -1,0 +1,39 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: train_aurora_cs
+version: 1
+display_name: Train AuroraCS conditioning network
+type: command
+description: >-
+  Train AuroraCS's forcing encoder and per-block adapters against one rollout window, and
+  register the result as a model asset.
+inputs:
+  era5_data:
+    type: uri_folder
+    description: ERA5 archive holding the ground-truth future snapshots.
+  initial_condition:
+    type: uri_folder
+    description: Aurora-ready history window (from prepare_initial_condition).
+  forcing_trajectory:
+    type: uri_file
+    description: Per-step CO2 forcing trajectory, a torch-saved 1-D tensor (from prepare_forcing_trajectory).
+  model_name:
+    type: string
+    description: Name to register the trained AuroraCS model under.
+  iters:
+    type: integer
+    default: 20
+    description: Number of training iterations over the rollout window.
+  lr:
+    type: number
+    default: 0.001
+    description: Adam learning rate.
+code: ../..
+environment: azureml:aurora-cs-pipeline-env@latest
+command: >-
+  python -m training.train_aurora_cs.train_aurora_cs
+  --era5-data ${{inputs.era5_data}}
+  --initial-condition ${{inputs.initial_condition}}
+  --forcing-trajectory ${{inputs.forcing_trajectory}}
+  --model-name ${{inputs.model_name}}
+  --iters ${{inputs.iters}}
+  --lr ${{inputs.lr}}
