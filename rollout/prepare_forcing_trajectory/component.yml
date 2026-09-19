@@ -1,0 +1,28 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: prepare_forcing_trajectory
+version: 1
+display_name: Prepare forcing trajectory
+type: command
+description: Build the per-step CO2 forcing trajectory for a rollout window.
+inputs:
+  co2_data:
+    type: uri_file
+    description: CO2 forcing series (input4MIPs-derived CSV).
+  start_time:
+    type: string
+    description: Rollout start timestamp, ISO 8601.
+  num_steps:
+    type: integer
+    description: Number of 6-hourly rollout steps.
+outputs:
+  forcing_trajectory:
+    type: uri_file
+    description: Per-step CO2 forcing trajectory.
+code: .
+environment: azureml:aurora-cs-pipeline-env@latest
+command: >-
+  python prepare_forcing_trajectory.py
+  --co2-data ${{inputs.co2_data}}
+  --start-time ${{inputs.start_time}}
+  --num-steps ${{inputs.num_steps}}
+  --forcing-trajectory ${{outputs.forcing_trajectory}}

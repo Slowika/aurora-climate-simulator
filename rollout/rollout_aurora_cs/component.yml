@@ -1,0 +1,27 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: rollout_aurora_cs
+version: 1
+display_name: Rollout AuroraCS
+type: command
+description: Run the AuroraCS autoregressive rollout conditioned on a CO2 forcing trajectory.
+inputs:
+  initial_condition:
+    type: uri_folder
+    description: Aurora-ready history window.
+  forcing_trajectory:
+    type: uri_file
+    description: Per-step CO2 forcing trajectory, a torch-saved 1-D tensor.
+  model_id:
+    type: string
+    description: Registered AuroraCS model to roll out, e.g. 'aurora-cs-adapter/3'.
+  num_steps:
+    type: integer
+    description: Number of 6-hourly rollout steps.
+code: .
+environment: azureml:aurora-cs-pipeline-env@latest
+command: >-
+  python rollout_aurora_cs.py
+  --initial-condition ${{inputs.initial_condition}}
+  --forcing-trajectory ${{inputs.forcing_trajectory}}
+  --model-id ${{inputs.model_id}}
+  --num-steps ${{inputs.num_steps}}
