@@ -1,0 +1,52 @@
+# Submit a `fetch_era5` run as an Azure ML command job on an existing compute:
+#
+#   az ml job create -f jobs/fetch_era5_job.yml
+#
+# Fill in the placeholders below, or override individual ones at submit time, e.g.:
+#
+#   az ml job create -f jobs/fetch_era5_job.yml \
+#       --set inputs.start_date=2026-01-01 --set inputs.end_date=2026-02-28
+#
+# Builds (or reuses) an Azure ML Environment from this repo's requirements.txt via
+# `environment/Dockerfile`, then runs `data.fetch_era5` with the inputs below forwarded as
+# CLI args.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+code: ..
+
+command: >-
+  python -m data.fetch_era5
+  --start-date ${{inputs.start_date}}
+  --end-date ${{inputs.end_date}}
+  --prefix ${{inputs.prefix}}
+  --asset-name ${{inputs.asset_name}}
+  --datastore-name ${{inputs.datastore_name}}
+  --subscription-id ${{inputs.subscription_id}}
+  --resource-group ${{inputs.resource_group}}
+  --workspace-name ${{inputs.workspace_name}}
+  --managed-identity-client-id ${{inputs.managed_identity_client_id}}
+
+environment:
+  build:
+    path: ..
+    dockerfile_path: environment/Dockerfile
+
+compute: azureml:<COMPUTE_NAME>
+
+display_name: fetch_era5-${{inputs.asset_name}}
+
+# Fetching a month of atmospheric data at 6-hourly cadence takes ~1.6h; leave generous headroom.
+limits:
+  timeout: 21600
+
+inputs:
+  start_date: <START_DATE>
+  end_date: <END_DATE>
+  prefix: <PREFIX>
+  asset_name: <ASSET_NAME>
+  datastore_name: workspaceblobstore
+  subscription_id: <SUBSCRIPTION_ID>
+  resource_group: <RESOURCE_GROUP>
+  workspace_name: <WORKSPACE_NAME>
+  # Optional: only needed if the compute's identity is user-assigned rather than system-assigned.
+  managed_identity_client_id: ""

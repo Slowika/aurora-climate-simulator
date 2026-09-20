@@ -83,6 +83,12 @@ def main() -> None:
     parser.add_argument("--subscription-id", required=True)
     parser.add_argument("--resource-group", required=True)
     parser.add_argument("--workspace-name", required=True)
+    parser.add_argument(
+        "--managed-identity-client-id",
+        default=None,
+        help="Client ID of a user-assigned identity, if the compute doesn't have a "
+        "system-assigned one.",
+    )
     args = parser.parse_args()
 
     try:
@@ -98,7 +104,12 @@ def main() -> None:
         logger.info(f"Wrote {len(co2)} row(s) to {output_path}")
 
         logger.info(f"Registering '{args.asset_name}' from {output_path}...")
-        ml_client = get_ml_client(args.subscription_id, args.resource_group, args.workspace_name)
+        ml_client = get_ml_client(
+            args.subscription_id,
+            args.resource_group,
+            args.workspace_name,
+            args.managed_identity_client_id or None,
+        )
         register_data_asset(
             ml_client,
             name=args.asset_name,
