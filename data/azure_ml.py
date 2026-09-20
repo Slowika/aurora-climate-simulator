@@ -8,19 +8,31 @@ from azure.ai.ml.entities import Data
 from azure.identity import DefaultAzureCredential
 
 
-def get_ml_client(subscription_id: str, resource_group: str, workspace_name: str) -> MLClient:
-    """Build an `MLClient` for the given workspace using the ambient Azure credentials."""
+def get_ml_client(
+    subscription_id: str,
+    resource_group: str,
+    workspace_name: str,
+    managed_identity_client_id: Optional[str] = None,
+) -> MLClient:
+    """Build an `MLClient` for the given workspace using the ambient Azure credentials.
+
+    `managed_identity_client_id`, if given, targets a specific user-assigned identity - needed
+    when running on a compute whose only attached identity is user-assigned, since
+    `DefaultAzureCredential` otherwise only resolves a compute's system-assigned identity.
+    """
     return MLClient(
-        DefaultAzureCredential(),
+        DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id),
         subscription_id=subscription_id,
         resource_group_name=resource_group,
         workspace_name=workspace_name,
     )
 
 
-def get_blob_filesystem(ml_client: MLClient) -> tuple[adlfs.AzureBlobFileSystem, str]:
-    """Filesystem + container name for direct read/write access to the default blob datastore."""
-    datastore = ml_client.datastores.get("workspaceblobstore", include_secrets=True)
+def get_blob_filesystem(
+    ml_client: MLClient, datastore_name: str
+) -> tuple[adlfs.AzureBlobFileSystem, str]:
+    """Filesystem + container name for direct read/write access to the given blob datastore."""
+    datastore = ml_client.datastores.get(datastore_name, include_secrets=True)
     credential = datastore.credentials
     fs = adlfs.AzureBlobFileSystem(
         account_name=datastore.account_name,

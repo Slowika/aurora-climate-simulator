@@ -91,9 +91,20 @@ def main() -> None:
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--prefix", required=True, help="blob path prefix under the datastore")
     parser.add_argument("--asset-name", required=True)
+    parser.add_argument(
+        "--datastore-name",
+        default="workspaceblobstore",
+        help="Name of the workspace blob datastore to write into.",
+    )
     parser.add_argument("--subscription-id", required=True)
     parser.add_argument("--resource-group", required=True)
     parser.add_argument("--workspace-name", required=True)
+    parser.add_argument(
+        "--managed-identity-client-id",
+        default=None,
+        help="Client ID of a user-assigned identity, if the compute doesn't have a "
+        "system-assigned one.",
+    )
     args = parser.parse_args()
 
     try:
@@ -101,8 +112,13 @@ def main() -> None:
         end = pd.Timestamp(args.end_date)
         prefix = args.prefix.strip("/")
 
-        ml_client = get_ml_client(args.subscription_id, args.resource_group, args.workspace_name)
-        fs, container = get_blob_filesystem(ml_client)
+        ml_client = get_ml_client(
+            args.subscription_id,
+            args.resource_group,
+            args.workspace_name,
+            args.managed_identity_client_id or None,
+        )
+        fs, container = get_blob_filesystem(ml_client, args.datastore_name)
 
         months = month_range(start, end)
         missing = [
@@ -129,7 +145,7 @@ def main() -> None:
         else:
             logger.info("All requested months (and statics) already present.")
 
-        asset_path = f"azureml://datastores/workspaceblobstore/paths/{prefix}"
+        asset_path = f"azureml://datastores/{args.datastore_name}/paths/{prefix}"
         logger.info(f"Registering '{args.asset_name}' from {asset_path}...")
         register_data_asset(
             ml_client,
