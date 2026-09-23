@@ -5,6 +5,7 @@ from typing import Optional
 import adlfs
 from azure.ai.ml import MLClient
 from azure.ai.ml.entities import Data
+from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 
 
@@ -58,8 +59,15 @@ def get_blob_filesystem(
 
 
 def next_version(ml_client: MLClient, name: str) -> str:
-    """Next version string for a Data asset, `"1"` if `name` hasn't been registered yet."""
-    versions = [int(asset.version) for asset in ml_client.data.list(name=name)]
+    """Next version string for a Data asset, `"1"` if `name` hasn't been registered yet.
+
+    `data.list(name=...)` raises `ResourceNotFoundError` (not an empty result) when no asset
+    with that name has ever been registered.
+    """
+    try:
+        versions = [int(asset.version) for asset in ml_client.data.list(name=name)]
+    except ResourceNotFoundError:
+        return "1"
     return str(max(versions) + 1) if versions else "1"
 
 
