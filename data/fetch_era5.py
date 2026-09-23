@@ -118,7 +118,9 @@ def main() -> None:
             args.workspace_name,
             args.managed_identity_client_id or None,
         )
-        fs, container = get_blob_filesystem(ml_client, args.datastore_name)
+        fs, container = get_blob_filesystem(
+            ml_client, args.datastore_name, args.managed_identity_client_id or None
+        )
 
         months = month_range(start, end)
         missing = [

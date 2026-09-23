@@ -29,15 +29,30 @@ def get_ml_client(
 
 
 def get_blob_filesystem(
-    ml_client: MLClient, datastore_name: str
+    ml_client: MLClient,
+    datastore_name: str,
+    managed_identity_client_id: Optional[str] = None,
 ) -> tuple[adlfs.AzureBlobFileSystem, str]:
-    """Filesystem + container name for direct read/write access to the given blob datastore."""
+    """Filesystem + container name for direct read/write access to the given blob datastore.
+
+    For identity-based (credential-less) datastores, `datastore.credentials` carries no
+    account key or SAS token, and `adlfs` would otherwise fall back to its own unscoped
+    `DefaultAzureCredential()` - losing `managed_identity_client_id` and breaking on computes
+    with only a user-assigned identity. Passing our own credential explicitly avoids that.
+    """
     datastore = ml_client.datastores.get(datastore_name, include_secrets=True)
     credential = datastore.credentials
+    account_key = getattr(credential, "account_key", None)
+    sas_token = getattr(credential, "sas_token", None)
     fs = adlfs.AzureBlobFileSystem(
         account_name=datastore.account_name,
-        account_key=getattr(credential, "account_key", None),
-        sas_token=getattr(credential, "sas_token", None),
+        account_key=account_key,
+        sas_token=sas_token,
+        credential=(
+            None
+            if (account_key or sas_token)
+            else DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
+        ),
     )
     return fs, datastore.container_name
 
