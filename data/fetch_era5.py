@@ -68,6 +68,11 @@ def fetch_month(ds: xr.Dataset, year: int, month: int, store) -> None:
     Every chunk in the source archive bundles all 37 pressure levels for a single hourly
     timestep, so selecting `ATMOS_LEVELS` doesn't reduce what has to be read off GCS - only
     subsampling in time does. Aurora itself only consumes 6-hourly steps, so this loses nothing.
+
+    A month of 5 atmospheric variables at 13 levels is ~30GB in float32 - too large to
+    materialize at once on modest compute. `ds` must be dask-backed (chunked one native
+    timestep at a time, via `open_zarr(..., chunks={"time": 1})`) so `to_zarr` streams the
+    write one chunk at a time instead, keeping peak memory flat regardless of range.
     """
     _, last_day = calendar.monthrange(year, month)
     times = pd.date_range(
@@ -77,7 +82,7 @@ def fetch_month(ds: xr.Dataset, year: int, month: int, store) -> None:
     )
     variables = list(SURF_VAR_MAP.values()) + list(ATMOS_VAR_MAP.values())
     subset = ds[variables].sel(time=times, level=ATMOS_LEVELS)
-    subset.compute().to_zarr(store, mode="w")
+    subset.to_zarr(store, mode="w")
 
 
 def fetch_static(ds: xr.Dataset, store) -> None:
@@ -134,7 +139,7 @@ def main() -> None:
         if missing or need_static:
             logger.info(f"Opening {ZARR_URL}...")
             gcs = gcsfs.GCSFileSystem(token="anon")
-            ds = xr.open_zarr(gcs.get_mapper(ZARR_URL), chunks=None)
+            ds = xr.open_zarr(gcs.get_mapper(ZARR_URL), chunks={"time": 1})
 
             if need_static:
                 logger.info(f"Writing static variables -> {static_path}")

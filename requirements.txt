@@ -3,6 +3,7 @@ torch
 tqdm
 pytest
 zarr<3
+dask
 gcsfs
 adlfs
 pandas
