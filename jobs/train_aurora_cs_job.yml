@@ -5,13 +5,13 @@
 # Fill in the placeholders below, or override individual ones at submit time, e.g.:
 #
 #   az ml job create -f jobs/train_aurora_cs_job.yml \
-#       --set inputs.iters=50 --set inputs.lr=0.0005
+#       --set inputs.epochs=10 --set inputs.lr=0.0005
 #
 # Unlike fetch_era5/fetch_co2_forcing, this wraps the existing `train_aurora_cs` component
 # (training/train_aurora_cs/component.yml) rather than defining its own command/environment.
-# `era5_data` should be a registered asset (e.g. from fetch_era5); `initial_condition` and
-# `forcing_trajectory` are whatever paths `prepare_initial_condition`/`prepare_forcing_trajectory`
-# produced, since there's no pipeline wiring them together yet.
+# `era5_data` and `co2_data` should be registered assets (from fetch_era5 / fetch_co2_forcing).
+# Training runs one forward/backward pass per adjacent triple of 6-hourly steps found in
+# `era5_data` - no separate rollout-preparation step is needed.
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 type: command
 component: file:../training/train_aurora_cs/component.yml
@@ -22,7 +22,7 @@ compute: azureml:<COMPUTE_NAME>
 
 display_name: train_aurora_cs-${{inputs.model_name}}
 
-# Adjust based on `iters` and the length of the rollout window used to prepare the inputs below.
+# Adjust based on `epochs` and the number of steps covered by `era5_data`.
 limits:
   timeout: 7200
 
@@ -30,12 +30,9 @@ inputs:
   era5_data:
     type: uri_folder
     path: azureml:<ERA5_ASSET_NAME>:<ERA5_ASSET_VERSION>
-  initial_condition:
-    type: uri_folder
-    path: <INITIAL_CONDITION_PATH>
-  forcing_trajectory:
+  co2_data:
     type: uri_file
-    path: <FORCING_TRAJECTORY_PATH>
+    path: azureml:<CO2_ASSET_NAME>:<CO2_ASSET_VERSION>
   model_name: <MODEL_NAME>
-  iters: 20
+  epochs: 5
   lr: 0.001
