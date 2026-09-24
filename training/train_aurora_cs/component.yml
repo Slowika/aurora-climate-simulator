@@ -4,25 +4,23 @@ version: 1
 display_name: Train AuroraCS conditioning network
 type: command
 description: >-
-  Train AuroraCS's forcing encoder and per-block adapters against one rollout window, and
-  register the result as a model asset.
+  Train AuroraCS's forcing encoder and per-block adapters via one-step (single forward pass)
+  prediction loss over every adjacent triple of 6-hourly ERA5 steps, and register the result
+  as a model asset.
 inputs:
   era5_data:
     type: uri_folder
-    description: ERA5 archive holding the ground-truth future snapshots.
-  initial_condition:
-    type: uri_folder
-    description: Aurora-ready history window (from prepare_initial_condition).
-  forcing_trajectory:
+    description: ERA5 archive (monthly zarr shards + statics) defining the training window.
+  co2_data:
     type: uri_file
-    description: Per-step CO2 forcing trajectory, a torch-saved 1-D tensor (from prepare_forcing_trajectory).
+    description: CO2 concentration series (from fetch_co2_forcing), a CSV with time/co2_ppm columns.
   model_name:
     type: string
     description: Name to register the trained AuroraCS model under.
-  iters:
+  epochs:
     type: integer
-    default: 20
-    description: Number of training iterations over the rollout window.
+    default: 5
+    description: Number of passes over all one-step training examples.
   lr:
     type: number
     default: 0.001
@@ -32,8 +30,7 @@ environment: azureml:aurora-cs-pipeline-env@latest
 command: >-
   python -m training.train_aurora_cs.train_aurora_cs
   --era5-data ${{inputs.era5_data}}
-  --initial-condition ${{inputs.initial_condition}}
-  --forcing-trajectory ${{inputs.forcing_trajectory}}
+  --co2-data ${{inputs.co2_data}}
   --model-name ${{inputs.model_name}}
-  --iters ${{inputs.iters}}
+  --epochs ${{inputs.epochs}}
   --lr ${{inputs.lr}}
