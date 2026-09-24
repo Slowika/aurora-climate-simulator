@@ -36,7 +36,12 @@ SCENARIO_SOURCE_IDS = {
 
 
 def find_file_url(scenario: str) -> str:
-    """Look up the HTTPServer download URL for a scenario's monthly global-mean CO2 file."""
+    """Look up the HTTPServer download URL for a scenario's monthly global-mean CO2 file.
+
+    input4MIPs CO2 forcing files are only mirrored at esgf.ceda.ac.uk; the workspace's egress
+    allowlist must permit ceda.ac.uk. Require that host explicitly rather than trusting whichever
+    mirror the search response lists first.
+    """
     params = {
         "project": "input4MIPs",
         "source_id": SCENARIO_SOURCE_IDS[scenario],
@@ -48,7 +53,14 @@ def find_file_url(scenario: str) -> str:
         "limit": 1,
     }
     docs = requests.get(ESGF_SEARCH_URL, params=params, timeout=30).json()["response"]["docs"]
-    return next(u.split("|")[0] for u in docs[0]["url"] if u.endswith("HTTPServer"))
+    urls = [u.split("|")[0] for u in docs[0]["url"] if u.endswith("HTTPServer")]
+    try:
+        return next(u for u in urls if "ceda.ac.uk" in u)
+    except StopIteration:
+        raise RuntimeError(
+            f"No ceda.ac.uk-hosted download URL found for scenario '{scenario}' "
+            f"(candidates: {urls})"
+        )
 
 
 def fetch_co2_series(scenario: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
