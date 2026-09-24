@@ -1,0 +1,38 @@
+# Submit `train_aurora_cs` as an Azure ML command job on an existing compute:
+#
+#   az ml job create -f jobs/train_aurora_cs_job.yml
+#
+# Fill in the placeholders below, or override individual ones at submit time, e.g.:
+#
+#   az ml job create -f jobs/train_aurora_cs_job.yml \
+#       --set inputs.epochs=10 --set inputs.lr=0.0005
+#
+# Unlike fetch_era5/fetch_co2_forcing, this wraps the existing `train_aurora_cs` component
+# (training/train_aurora_cs/component.yml) rather than defining its own command/environment.
+# `era5_data` and `co2_data` should be registered assets (from fetch_era5 / fetch_co2_forcing).
+# Training runs one forward/backward pass per adjacent triple of 6-hourly steps found in
+# `era5_data` - no separate rollout-preparation step is needed.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+component: file:../training/train_aurora_cs/component.yml
+
+# Training benefits from a GPU compute target; nothing in the code requires one (falls back to
+# CPU), but real training runs will be far too slow without it.
+compute: azureml:<COMPUTE_NAME>
+
+display_name: train_aurora_cs-${{inputs.model_name}}
+
+# Adjust based on `epochs` and the number of steps covered by `era5_data`.
+limits:
+  timeout: 7200
+
+inputs:
+  era5_data:
+    type: uri_folder
+    path: azureml:<ERA5_ASSET_NAME>:<ERA5_ASSET_VERSION>
+  co2_data:
+    type: uri_file
+    path: azureml:<CO2_ASSET_NAME>:<CO2_ASSET_VERSION>
+  model_name: <MODEL_NAME>
+  epochs: 5
+  lr: 0.001

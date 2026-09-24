@@ -1,0 +1,24 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: prepare_initial_condition
+version: 1
+display_name: Prepare initial condition
+type: command
+description: Build Aurora's history-window initial condition from ERA5 for a rollout start time.
+inputs:
+  era5_data:
+    type: uri_folder
+    description: ERA5 archive (monthly zarr shards + statics).
+  start_time:
+    type: string
+    description: Rollout start timestamp, ISO 8601.
+outputs:
+  initial_condition:
+    type: uri_folder
+    description: Aurora-ready history window.
+code: .
+environment: azureml:aurora-cs-pipeline-env@latest
+command: >-
+  python prepare_initial_condition.py
+  --era5-data ${{inputs.era5_data}}
+  --start-time ${{inputs.start_time}}
+  --initial-condition ${{outputs.initial_condition}}

@@ -2,6 +2,16 @@ numpy
 torch
 tqdm
 pytest
-zarr
+zarr<3
+dask
 gcsfs
+adlfs
+pandas
+requests
+xarray
+netCDF4
+azure-ai-ml
+azure-identity
+mlflow
+azureml-mlflow
 git+https://github.com/Slowika/aurora.git@main

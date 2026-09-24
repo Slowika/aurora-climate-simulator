@@ -1,0 +1,53 @@
+# Submit a `fetch_co2_forcing` run as an Azure ML command job on an existing compute:
+#
+#   az ml job create -f jobs/fetch_co2_forcing_job.yml
+#
+# Fill in the placeholders below, or override individual ones at submit time, e.g.:
+#
+#   az ml job create -f jobs/fetch_co2_forcing_job.yml \
+#       --set inputs.scenario=ssp245 --set inputs.start_date=2020-01-01
+#
+# --scenario must be one of: ssp126, ssp245, ssp370, ssp585
+#
+# Builds (or reuses) the same Azure ML Environment as fetch_era5_job.yml, then runs
+# `data.fetch_co2_forcing` with the inputs below forwarded as CLI args.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+code: ..
+
+command: >-
+  python -m data.fetch_co2_forcing
+  --start-date ${{inputs.start_date}}
+  --end-date ${{inputs.end_date}}
+  --scenario ${{inputs.scenario}}
+  --output-path ${{inputs.output_path}}
+  --asset-name ${{inputs.asset_name}}
+  --subscription-id ${{inputs.subscription_id}}
+  --resource-group ${{inputs.resource_group}}
+  --workspace-name ${{inputs.workspace_name}}
+  --managed-identity-client-id ${{inputs.managed_identity_client_id}}
+
+environment:
+  build:
+    path: ..
+    dockerfile_path: environment/Dockerfile
+
+compute: azureml:<COMPUTE_NAME>
+
+display_name: fetch_co2_forcing-${{inputs.asset_name}}
+
+# A single small file download - much lighter than fetch_era5.
+limits:
+  timeout: 1800
+
+inputs:
+  start_date: <START_DATE>
+  end_date: <END_DATE>
+  scenario: <SCENARIO>
+  output_path: <OUTPUT_PATH>
+  asset_name: <ASSET_NAME>
+  subscription_id: <SUBSCRIPTION_ID>
+  resource_group: <RESOURCE_GROUP>
+  workspace_name: <WORKSPACE_NAME>
+  # Optional: only needed if the compute's identity is user-assigned rather than system-assigned.
+  managed_identity_client_id: ""

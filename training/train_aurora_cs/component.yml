@@ -1,0 +1,36 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+name: train_aurora_cs
+version: 1
+display_name: Train AuroraCS conditioning network
+type: command
+description: >-
+  Train AuroraCS's forcing encoder and per-block adapters via one-step (single forward pass)
+  prediction loss over every adjacent triple of 6-hourly ERA5 steps, and register the result
+  as a model asset.
+inputs:
+  era5_data:
+    type: uri_folder
+    description: ERA5 archive (monthly zarr shards + statics) defining the training window.
+  co2_data:
+    type: uri_file
+    description: CO2 concentration series (from fetch_co2_forcing), a CSV with time/co2_ppm columns.
+  model_name:
+    type: string
+    description: Name to register the trained AuroraCS model under.
+  epochs:
+    type: integer
+    default: 5
+    description: Number of passes over all one-step training examples.
+  lr:
+    type: number
+    default: 0.001
+    description: Adam learning rate.
+code: ../..
+environment: azureml:aurora-cs-pipeline-env@latest
+command: >-
+  python -m training.train_aurora_cs.train_aurora_cs
+  --era5-data ${{inputs.era5_data}}
+  --co2-data ${{inputs.co2_data}}
+  --model-name ${{inputs.model_name}}
+  --epochs ${{inputs.epochs}}
+  --lr ${{inputs.lr}}
