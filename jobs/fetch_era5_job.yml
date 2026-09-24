@@ -33,7 +33,7 @@ environment:
 
 compute: azureml:<COMPUTE_NAME>
 
-display_name: fetch_era5-${{inputs.asset_name}}
+display_name: fetch_era5
 
 # Fetching a month of atmospheric data at 6-hourly cadence takes ~1.6h; leave generous headroom.
 limits:

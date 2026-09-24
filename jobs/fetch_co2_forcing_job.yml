@@ -34,7 +34,7 @@ environment:
 
 compute: azureml:<COMPUTE_NAME>
 
-display_name: fetch_co2_forcing-${{inputs.asset_name}}
+display_name: fetch_co2_forcing
 
 # A single small file download - much lighter than fetch_era5.
 limits:
