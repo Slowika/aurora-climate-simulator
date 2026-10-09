@@ -9,13 +9,15 @@ forcing value.
 
 from datetime import datetime
 
+import pytest
 import torch
 from aurora import Batch, Metadata
 
 from aurora_cs.model import AuroraCS
 
 
-def _tiny_batch() -> Batch:
+@pytest.fixture
+def tiny_batch() -> Batch:
     h = w = 16
     b, t, c = 1, 1, 3
     lat = torch.linspace(90, -90, h)
@@ -33,7 +35,9 @@ def _tiny_batch() -> Batch:
     )
 
 
-def test_zero_init_adapters_are_a_no_op():
+def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
+    """Verifies that an AuroraCS model with a no-op conditioning network behaves identically
+    to the baseline Aurora."""
     model = AuroraCS(
         encoder_depths=(2, 2),
         encoder_num_heads=(2, 2),
@@ -46,11 +50,10 @@ def test_zero_init_adapters_are_a_no_op():
         use_lora=False,
     )
     model.eval()
-    batch = _tiny_batch()
 
     with torch.no_grad():
-        conditioned = model(batch, forcing=417.0)
-        baseline = model.aurora(batch)
+        conditioned = model(tiny_batch, forcing=417.0)
+        baseline = model.aurora(tiny_batch)
 
     for name in conditioned.surf_vars:
         assert torch.equal(conditioned.surf_vars[name], baseline.surf_vars[name])
