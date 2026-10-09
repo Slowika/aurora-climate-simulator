@@ -1,7 +1,7 @@
 """CLI producer: fetch ERA5 weather data from ARCO-ERA5 and register it as a monthly-sharded
 Azure ML data asset, written directly to the workspace's blob datastore, e.g.:
 
-    python -m data.fetch_era5 --start-date 2020-01-01 --end-date 2020-03-01 \\
+    python fetch_era5.py --start-date 2020-01-01 --end-date 2020-03-01 \\
         --prefix era5 --asset-name era5-weather \\
         --subscription-id ... --resource-group ... --workspace-name ...
 
@@ -12,14 +12,13 @@ under `--prefix`, then registers a new version of the asset over the (now larger
 import argparse
 import calendar
 import logging
-import sys
 
 import gcsfs
 import pandas as pd
 import xarray as xr
 from azure.ai.ml.constants import AssetTypes
 
-from data.azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
+from azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -112,61 +111,57 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    try:
-        start = pd.Timestamp(args.start_date)
-        end = pd.Timestamp(args.end_date)
-        prefix = args.prefix.strip("/")
+    start = pd.Timestamp(args.start_date)
+    end = pd.Timestamp(args.end_date)
+    prefix = args.prefix.strip("/")
 
-        ml_client = get_ml_client(
-            args.subscription_id,
-            args.resource_group,
-            args.workspace_name,
-            args.managed_identity_client_id or None,
-        )
-        fs, container = get_blob_filesystem(
-            ml_client, args.datastore_name, args.managed_identity_client_id or None
-        )
+    ml_client = get_ml_client(
+        args.subscription_id,
+        args.resource_group,
+        args.workspace_name,
+        args.managed_identity_client_id or None,
+    )
+    fs, container = get_blob_filesystem(
+        ml_client, args.datastore_name, args.managed_identity_client_id or None
+    )
 
-        months = month_range(start, end)
-        missing = [
-            (year, month)
-            for year, month in months
-            if not fs.exists(f"{container}/{prefix}/{year}-{month:02d}.zarr")
-        ]
-        static_path = f"{container}/{prefix}/static.zarr"
-        need_static = not fs.exists(static_path)
+    months = month_range(start, end)
+    missing = [
+        (year, month)
+        for year, month in months
+        if not fs.exists(f"{container}/{prefix}/{year}-{month:02d}.zarr")
+    ]
+    static_path = f"{container}/{prefix}/static.zarr"
+    need_static = not fs.exists(static_path)
 
-        if missing or need_static:
-            logger.info(f"Opening {ZARR_URL}...")
-            gcs = gcsfs.GCSFileSystem(token="anon")
-            ds = xr.open_zarr(gcs.get_mapper(ZARR_URL), chunks={"time": 1})
+    if missing or need_static:
+        logger.info(f"Opening {ZARR_URL}...")
+        gcs = gcsfs.GCSFileSystem(token="anon")
+        ds = xr.open_zarr(gcs.get_mapper(ZARR_URL), chunks={"time": 1})
 
-            if need_static:
-                logger.info(f"Writing static variables -> {static_path}")
-                fetch_static(ds, fs.get_mapper(static_path))
+        if need_static:
+            logger.info(f"Writing static variables -> {static_path}")
+            fetch_static(ds, fs.get_mapper(static_path))
 
-            for year, month in missing:
-                path = f"{container}/{prefix}/{year}-{month:02d}.zarr"
-                logger.info(f"  {year}-{month:02d} -> {path}")
-                fetch_month(ds, year, month, fs.get_mapper(path))
-        else:
-            logger.info("All requested months (and statics) already present.")
+        for year, month in missing:
+            path = f"{container}/{prefix}/{year}-{month:02d}.zarr"
+            logger.info(f"  {year}-{month:02d} -> {path}")
+            fetch_month(ds, year, month, fs.get_mapper(path))
+    else:
+        logger.info("All requested months (and statics) already present.")
 
-        asset_path = f"azureml://datastores/{args.datastore_name}/paths/{prefix}"
-        logger.info(f"Registering '{args.asset_name}' from {asset_path}...")
-        register_data_asset(
-            ml_client,
-            name=args.asset_name,
-            path=asset_path,
-            asset_type=AssetTypes.URI_FOLDER,
-            description=f"ERA5 weather data, monthly shards, {args.start_date} to {args.end_date}",
-            version=next_version(ml_client, args.asset_name),
-            tags=DATA_TAG,
-        )
-        logger.info("Done.")
-    except Exception as e:
-        print(e)
-        sys.exit(1)
+    asset_path = f"azureml://datastores/{args.datastore_name}/paths/{prefix}"
+    logger.info(f"Registering '{args.asset_name}' from {asset_path}...")
+    register_data_asset(
+        ml_client,
+        name=args.asset_name,
+        path=asset_path,
+        asset_type=AssetTypes.URI_FOLDER,
+        description=f"ERA5 weather data, monthly shards, {args.start_date} to {args.end_date}",
+        version=next_version(ml_client, args.asset_name),
+        tags=DATA_TAG,
+    )
+    logger.info("Done.")
 
 
 if __name__ == "__main__":

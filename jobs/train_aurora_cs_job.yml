@@ -7,6 +7,9 @@
 #   az ml job create -f jobs/train_aurora_cs_job.yml \
 #       --set inputs.epochs=10 --set inputs.lr=0.0005
 #
+# Uses the `aurora-cs-torch-env` environment (register it first with
+# `az ml environment create -f environment/torch/environment.yml`).
+#
 # `era5_data` and `co2_data` should be registered assets (from fetch_era5 / fetch_co2_forcing).
 # Training runs one forward/backward pass per adjacent triple of 6-hourly steps found in
 # `era5_data` - no separate rollout-preparation step is needed.
@@ -16,17 +19,17 @@
 # doesn't support component-wrapping jobs.
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 
-code: ..
+code: ../training/train_aurora_cs
 
 command: >-
-  python -m training.train_aurora_cs.train_aurora_cs
+  python train_aurora_cs.py
   --era5-data ${{inputs.era5_data}}
   --co2-data ${{inputs.co2_data}}
   --model-name ${{inputs.model_name}}
   --epochs ${{inputs.epochs}}
   --lr ${{inputs.lr}}
 
-environment: azureml:aurora-cs-pipeline-env@latest
+environment: azureml:aurora-cs-torch-env@latest
 
 # Training benefits from a GPU compute target; nothing in the code requires one (falls back to
 # CPU), but real training runs will be far too slow without it.

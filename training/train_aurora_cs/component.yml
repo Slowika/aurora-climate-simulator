@@ -25,10 +25,10 @@ inputs:
     type: number
     default: 0.001
     description: Adam learning rate.
-code: ../..
-environment: azureml:aurora-cs-pipeline-env@latest
+code: .
+environment: azureml:aurora-cs-torch-env@latest
 command: >-
-  python -m training.train_aurora_cs.train_aurora_cs
+  python train_aurora_cs.py
   --era5-data ${{inputs.era5_data}}
   --co2-data ${{inputs.co2_data}}
   --model-name ${{inputs.model_name}}

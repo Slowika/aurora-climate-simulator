@@ -7,15 +7,15 @@
 #   az ml job create -f jobs/fetch_era5_job.yml \
 #       --set inputs.start_date=2026-01-01 --set inputs.end_date=2026-02-28
 #
-# Builds (or reuses) an Azure ML Environment from this repo's requirements.txt via
-# `environment/Dockerfile`, then runs `data.fetch_era5` with the inputs below forwarded as
-# CLI args.
+# Runs `data.fetch_era5` in the `aurora-cs-data-env` environment (register it first with
+# `az ml environment create -f environment/data/environment.yml`), with the inputs below
+# forwarded as CLI args.
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 
-code: ..
+code: ../data
 
 command: >-
-  python -m data.fetch_era5
+  python fetch_era5.py
   --start-date ${{inputs.start_date}}
   --end-date ${{inputs.end_date}}
   --prefix ${{inputs.prefix}}
@@ -26,10 +26,7 @@ command: >-
   --workspace-name ${{inputs.workspace_name}}
   --managed-identity-client-id ${{inputs.managed_identity_client_id}}
 
-environment:
-  build:
-    path: ..
-    dockerfile_path: environment/Dockerfile
+environment: azureml:aurora-cs-data-env@latest
 
 compute: azureml:<COMPUTE_NAME>
 

@@ -7,7 +7,6 @@ result as a 1-D tensor.
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -34,23 +33,19 @@ def main() -> None:
     parser.add_argument("--forcing-trajectory", required=True)
     args = parser.parse_args()
 
-    try:
-        logger.info(
-            f"Preparing {args.num_steps}-step forcing trajectory from {args.start_time} "
-            f"using {args.co2_data}..."
-        )
-        co2 = pd.read_csv(args.co2_data, parse_dates=["time"])
-        start_time = pd.Timestamp(args.start_time)
-        step_times = [start_time + (i + 1) * pd.Timedelta(hours=6) for i in range(args.num_steps)]
-        forcing = torch.tensor([co2_ppm_for(co2, when) for when in step_times], dtype=torch.float32)
+    logger.info(
+        f"Preparing {args.num_steps}-step forcing trajectory from {args.start_time} "
+        f"using {args.co2_data}..."
+    )
+    co2 = pd.read_csv(args.co2_data, parse_dates=["time"])
+    start_time = pd.Timestamp(args.start_time)
+    step_times = [start_time + (i + 1) * pd.Timedelta(hours=6) for i in range(args.num_steps)]
+    forcing = torch.tensor([co2_ppm_for(co2, when) for when in step_times], dtype=torch.float32)
 
-        out_path = Path(args.forcing_trajectory)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(forcing, out_path)
-        logger.info(f"Wrote {len(forcing)}-step forcing trajectory -> {out_path}")
-    except Exception as e:
-        print(e)
-        sys.exit(1)
+    out_path = Path(args.forcing_trajectory)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(forcing, out_path)
+    logger.info(f"Wrote {len(forcing)}-step forcing trajectory -> {out_path}")
 
 
 if __name__ == "__main__":

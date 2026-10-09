@@ -16,7 +16,7 @@ outputs:
     type: uri_folder
     description: Aurora-ready history window.
 code: .
-environment: azureml:aurora-cs-pipeline-env@latest
+environment: azureml:aurora-cs-torch-env@latest
 command: >-
   python prepare_initial_condition.py
   --era5-data ${{inputs.era5_data}}

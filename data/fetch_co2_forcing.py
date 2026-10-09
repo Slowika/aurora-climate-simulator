@@ -2,7 +2,7 @@
 via ESGF) for a given SSP scenario and register the requested date range as an Azure ML data
 asset, e.g.:
 
-    python -m data.fetch_co2_forcing --start-date 2020-01-01 --end-date 2020-06-01 \\
+    python fetch_co2_forcing.py --start-date 2020-01-01 --end-date 2020-06-01 \\
         --scenario ssp245 --output-path ~/data/co2/co2.csv --asset-name co2-forcing \\
         --subscription-id ... --resource-group ... --workspace-name ...
 
@@ -11,7 +11,6 @@ Coverage starts 2015-01 (ScenarioMIP data does not extend into the historical pe
 
 import argparse
 import logging
-import sys
 import tempfile
 from pathlib import Path
 
@@ -20,7 +19,7 @@ import requests
 import xarray as xr
 from azure.ai.ml.constants import AssetTypes
 
-from data.azure_ml import get_ml_client, register_data_asset
+from azure_ml import get_ml_client, register_data_asset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -52,7 +51,9 @@ def find_file_url(scenario: str) -> str:
         "format": "application/solr+json",
         "limit": 1,
     }
-    docs = requests.get(ESGF_SEARCH_URL, params=params, timeout=30).json()["response"]["docs"]
+    response = requests.get(ESGF_SEARCH_URL, params=params, timeout=30)
+    response.raise_for_status()
+    docs = response.json()["response"]["docs"]
     urls = [u.split("|")[0] for u in docs[0]["url"] if u.endswith("HTTPServer")]
     try:
         return next(u for u in urls if "ceda.ac.uk" in u)
@@ -72,7 +73,9 @@ def fetch_co2_series(scenario: str, start: pd.Timestamp, end: pd.Timestamp) -> p
     """
     url = find_file_url(scenario)
     with tempfile.NamedTemporaryFile(suffix=".nc") as tmp:
-        tmp.write(requests.get(url, timeout=60).content)
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        tmp.write(response.content)
         tmp.flush()
         ds = xr.open_dataset(tmp.name)
         window = ds["mole_fraction_of_carbon_dioxide_in_air"].sel(
@@ -103,36 +106,32 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    try:
-        start = pd.Timestamp(args.start_date)
-        end = pd.Timestamp(args.end_date)
+    start = pd.Timestamp(args.start_date)
+    end = pd.Timestamp(args.end_date)
 
-        logger.info(f"Fetching input4MIPs CO2 series for scenario '{args.scenario}'...")
-        co2 = fetch_co2_series(args.scenario, start, end)
+    logger.info(f"Fetching input4MIPs CO2 series for scenario '{args.scenario}'...")
+    co2 = fetch_co2_series(args.scenario, start, end)
 
-        output_path = Path(args.output_path).expanduser()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        co2.to_csv(output_path, index=False)
-        logger.info(f"Wrote {len(co2)} row(s) to {output_path}")
+    output_path = Path(args.output_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    co2.to_csv(output_path, index=False)
+    logger.info(f"Wrote {len(co2)} row(s) to {output_path}")
 
-        logger.info(f"Registering '{args.asset_name}' from {output_path}...")
-        ml_client = get_ml_client(
-            args.subscription_id,
-            args.resource_group,
-            args.workspace_name,
-            args.managed_identity_client_id or None,
-        )
-        register_data_asset(
-            ml_client,
-            name=args.asset_name,
-            path=str(output_path),
-            asset_type=AssetTypes.URI_FILE,
-            description=f"input4MIPs CO2 ({args.scenario}), {args.start_date} to {args.end_date}",
-        )
-        logger.info("Done.")
-    except Exception as e:
-        print(e)
-        sys.exit(1)
+    logger.info(f"Registering '{args.asset_name}' from {output_path}...")
+    ml_client = get_ml_client(
+        args.subscription_id,
+        args.resource_group,
+        args.workspace_name,
+        args.managed_identity_client_id or None,
+    )
+    register_data_asset(
+        ml_client,
+        name=args.asset_name,
+        path=str(output_path),
+        asset_type=AssetTypes.URI_FILE,
+        description=f"input4MIPs CO2 ({args.scenario}), {args.start_date} to {args.end_date}",
+    )
+    logger.info("Done.")
 
 
 if __name__ == "__main__":

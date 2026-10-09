@@ -19,7 +19,7 @@ outputs:
     type: uri_file
     description: Per-step CO2 forcing trajectory.
 code: .
-environment: azureml:aurora-cs-pipeline-env@latest
+environment: azureml:aurora-cs-torch-env@latest
 command: >-
   python prepare_forcing_trajectory.py
   --co2-data ${{inputs.co2_data}}

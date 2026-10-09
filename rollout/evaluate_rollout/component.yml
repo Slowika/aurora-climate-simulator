@@ -15,15 +15,10 @@ inputs:
     type: uri_folder
     optional: true
     description: Optional raw-Aurora baseline rollout for comparison.
-outputs:
-  metrics:
-    type: uri_folder
-    description: Computed evaluation metrics/report.
 code: .
-environment: azureml:aurora-cs-pipeline-env@latest
+environment: azureml:aurora-cs-torch-env@latest
 command: >-
   python evaluate_rollout.py
   --predictions ${{inputs.predictions}}
   --era5-data ${{inputs.era5_data}}
   $[[--baseline-predictions ${{inputs.baseline_predictions}}]]
-  --metrics ${{outputs.metrics}}

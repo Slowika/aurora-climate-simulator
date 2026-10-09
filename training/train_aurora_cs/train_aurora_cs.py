@@ -11,7 +11,7 @@ forced, single-step training - no autoregressive rollout.
 import argparse
 import logging
 import random
-import sys
+import tempfile
 from pathlib import Path
 
 import mlflow
@@ -21,7 +21,7 @@ import torch.nn.functional as F
 import xarray as xr
 
 from aurora import Batch, Metadata
-from aurora_cs import AuroraCS
+from aurora_cs import AuroraCS, save_checkpoint
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,6 +47,16 @@ STATIC_VAR_MAP = {
 }
 
 CHECKPOINT = "aurora-0.25-small-pretrained.ckpt"
+# "AuroraSmallPretrained" architecture; stored with the registered model to rebuild it.
+MODEL_CONFIG = dict(
+    encoder_depths=(2, 6, 2),
+    encoder_num_heads=(4, 8, 16),
+    decoder_depths=(2, 6, 2),
+    decoder_num_heads=(16, 8, 4),
+    embed_dim=256,
+    num_heads=8,
+    use_lora=False,
+)
 PATCH_SIZE = 4  # AuroraCS's default `patch_size`; history windows must be pre-cropped to it.
 SIX_HOURS = pd.Timedelta(hours=6)
 
@@ -135,26 +145,33 @@ def load_target(era5_data: Path, cache: dict, when: pd.Timestamp, crop_h: int) -
     }
 
 
-def build_examples(
-    era5_data: Path, co2: pd.DataFrame, device: torch.device
-) -> list[tuple[Batch, float, dict]]:
-    """One training example per adjacent triple of 6-hourly steps in `era5_data`: a 2-step
-    history window ending at the middle step, paired with the ground-truth next step and its
-    CO2 forcing value. Triples spanning a gap in coverage (e.g. a non-contiguous fetch) are
-    skipped."""
-    cache: dict = {}
-    static = xr.open_zarr(str(era5_data / "static.zarr"), chunks=None)
+def discover_examples(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
+    """The middle timestamp of every adjacent triple of 6-hourly steps in `era5_data`: the
+    history window ends there and the next step is the target. Triples spanning a gap in
+    coverage (e.g. a non-contiguous fetch) are skipped."""
     times = discover_times(era5_data, cache)
+    return [
+        cur_t
+        for prev_t, cur_t, next_t in zip(times, times[1:], times[2:])
+        if cur_t - prev_t == SIX_HOURS and next_t - cur_t == SIX_HOURS
+    ]
 
-    examples = []
-    for prev_t, cur_t, next_t in zip(times, times[1:], times[2:]):
-        if cur_t - prev_t != SIX_HOURS or next_t - cur_t != SIX_HOURS:
-            continue
-        batch = build_batch(era5_data, cache, static, cur_t).to(device)
-        crop_h = batch.metadata.lat.shape[0]
-        target = load_target(era5_data, cache, next_t, crop_h)
-        examples.append((batch, co2_ppm_for(co2, next_t), target))
-    return examples
+
+def load_example(
+    era5_data: Path,
+    cache: dict,
+    static: xr.Dataset,
+    co2: pd.DataFrame,
+    cur_t: pd.Timestamp,
+    device: torch.device,
+) -> tuple[Batch, float, dict]:
+    """Load one training example on demand (so memory stays flat in the dataset size): the
+    2-step history window ending at `cur_t` on `device`, the CO2 forcing value for the next
+    step, and the ground-truth next step (left on the CPU)."""
+    next_t = cur_t + SIX_HOURS
+    batch = build_batch(era5_data, cache, static, cur_t).to(device)
+    target = load_target(era5_data, cache, next_t, batch.metadata.lat.shape[0])
+    return batch, co2_ppm_for(co2, next_t), target
 
 
 def step_loss(pred: Batch, target: dict) -> torch.Tensor:
@@ -170,6 +187,14 @@ def step_loss(pred: Batch, target: dict) -> torch.Tensor:
     return torch.stack(losses).mean()
 
 
+def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
+    """Log `model` (weights + `config`, see `save_checkpoint`) to the active run and register it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        save_checkpoint(model, config, tmp)
+        mlflow.log_artifacts(tmp, artifact_path="model")
+    mlflow.register_model(f"{mlflow.active_run().info.artifact_uri}/model", model_name)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--era5-data", required=True)
@@ -179,67 +204,52 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     args = parser.parse_args()
 
-    try:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {device}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
 
-        era5_data = Path(args.era5_data)
-        co2 = pd.read_csv(args.co2_data, parse_dates=["time"])
+    era5_data = Path(args.era5_data)
+    co2 = pd.read_csv(args.co2_data, parse_dates=["time"])
 
-        logger.info(f"Building one-step training examples from {era5_data}...")
-        examples = build_examples(era5_data, co2, device)
-        if not examples:
-            raise RuntimeError(
-                "No adjacent-triple training examples found - era5_data needs at least 3 "
-                "consecutive 6-hourly steps."
-            )
-        logger.info(f"Built {len(examples)} training example(s).")
-
-        logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
-        model = AuroraCS(
-            encoder_depths=(2, 6, 2),
-            encoder_num_heads=(4, 8, 16),
-            decoder_depths=(2, 6, 2),
-            decoder_num_heads=(16, 8, 4),
-            embed_dim=256,
-            num_heads=8,
-            use_lora=False,
-        ).to(device)
-        model.aurora.load_checkpoint(name=CHECKPOINT)
-
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = torch.optim.Adam(trainable_params, lr=args.lr)
-
-        logger.info(f"Training for {args.epochs} epoch(s) over {len(examples)} example(s)...")
-        rng = random.Random(0)
-        global_step = 0
-        for epoch in range(args.epochs):
-            rng.shuffle(examples)
-            epoch_loss = 0.0
-            for batch, forcing, target in examples:
-                optimizer.zero_grad()
-                pred = model(batch, forcing=forcing)
-                loss = step_loss(pred, target)
-                loss.backward()
-                optimizer.step()
-                mlflow.log_metric("loss", loss.item(), step=global_step)
-                epoch_loss += loss.item()
-                global_step += 1
-            mean_loss = epoch_loss / len(examples)
-            mlflow.log_metric("epoch_loss", mean_loss, step=epoch)
-            logger.info(f"  epoch {epoch}: mean loss = {mean_loss:.6f}")
-
-        logger.info(f"Registering trained model as '{args.model_name}'...")
-        mlflow.pytorch.log_model(
-            model,
-            artifact_path="model",
-            registered_model_name=args.model_name,
-            serialization_format="pickle",
+    cache: dict = {}
+    static = xr.open_zarr(str(era5_data / "static.zarr"), chunks=None)
+    examples = discover_examples(era5_data, cache)
+    if not examples:
+        raise RuntimeError(
+            "No adjacent-triple training examples found - era5_data needs at least 3 "
+            "consecutive 6-hourly steps."
         )
-        logger.info("Done.")
-    except Exception as e:
-        print(e)
-        sys.exit(1)
+    logger.info(f"Found {len(examples)} training example(s) in {era5_data}.")
+
+    logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
+    model = AuroraCS(**MODEL_CONFIG).to(device)
+    model.aurora.load_checkpoint(name=CHECKPOINT)
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.Adam(trainable_params, lr=args.lr)
+
+    logger.info(f"Training for {args.epochs} epoch(s) over {len(examples)} example(s)...")
+    rng = random.Random(0)
+    global_step = 0
+    for epoch in range(args.epochs):
+        rng.shuffle(examples)
+        epoch_loss = 0.0
+        for cur_t in examples:
+            batch, forcing, target = load_example(era5_data, cache, static, co2, cur_t, device)
+            optimizer.zero_grad()
+            pred = model(batch, forcing=forcing)
+            loss = step_loss(pred, target)
+            loss.backward()
+            optimizer.step()
+            mlflow.log_metric("loss", loss.item(), step=global_step)
+            epoch_loss += loss.item()
+            global_step += 1
+        mean_loss = epoch_loss / len(examples)
+        mlflow.log_metric("epoch_loss", mean_loss, step=epoch)
+        logger.info(f"  epoch {epoch}: mean loss = {mean_loss:.6f}")
+
+    logger.info(f"Registering trained model as '{args.model_name}'...")
+    register_model(model, MODEL_CONFIG, args.model_name)
+    logger.info("Done.")
 
 
 if __name__ == "__main__":

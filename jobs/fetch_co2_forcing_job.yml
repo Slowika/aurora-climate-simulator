@@ -9,14 +9,14 @@
 #
 # --scenario must be one of: ssp126, ssp245, ssp370, ssp585
 #
-# Builds (or reuses) the same Azure ML Environment as fetch_era5_job.yml, then runs
-# `data.fetch_co2_forcing` with the inputs below forwarded as CLI args.
+# Runs `data.fetch_co2_forcing` in the `aurora-cs-data-env` environment (see fetch_era5_job.yml
+# for registration), with the inputs below forwarded as CLI args.
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 
-code: ..
+code: ../data
 
 command: >-
-  python -m data.fetch_co2_forcing
+  python fetch_co2_forcing.py
   --start-date ${{inputs.start_date}}
   --end-date ${{inputs.end_date}}
   --scenario ${{inputs.scenario}}
@@ -27,10 +27,7 @@ command: >-
   --workspace-name ${{inputs.workspace_name}}
   --managed-identity-client-id ${{inputs.managed_identity_client_id}}
 
-environment:
-  build:
-    path: ..
-    dockerfile_path: environment/Dockerfile
+environment: azureml:aurora-cs-data-env@latest
 
 compute: azureml:<COMPUTE_NAME>
 
