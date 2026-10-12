@@ -6,7 +6,7 @@ import adlfs
 from azure.ai.ml import MLClient
 from azure.ai.ml.entities import Data
 from azure.core.exceptions import ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
+from azure.identity import ManagedIdentityCredential
 
 
 def get_ml_client(
@@ -15,14 +15,13 @@ def get_ml_client(
     workspace_name: str,
     managed_identity_client_id: Optional[str] = None,
 ) -> MLClient:
-    """Build an `MLClient` for the given workspace using the ambient Azure credentials.
+    """Build an `MLClient` for the given workspace, authenticating as the compute's managed identity.
 
-    `managed_identity_client_id`, if given, targets a specific user-assigned identity - needed
-    when running on a compute whose only attached identity is user-assigned, since
-    `DefaultAzureCredential` otherwise only resolves a compute's system-assigned identity.
+    `managed_identity_client_id` selects a user-assigned identity; omit it to use the compute's
+    system-assigned identity.
     """
     return MLClient(
-        DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id),
+        ManagedIdentityCredential(client_id=managed_identity_client_id),
         subscription_id=subscription_id,
         resource_group_name=resource_group,
         workspace_name=workspace_name,
@@ -52,7 +51,7 @@ def get_blob_filesystem(
         credential=(
             None
             if (account_key or sas_token)
-            else DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
+            else ManagedIdentityCredential(client_id=managed_identity_client_id)
         ),
     )
     return fs, datastore.container_name

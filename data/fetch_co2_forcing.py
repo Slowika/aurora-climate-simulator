@@ -101,8 +101,8 @@ def main() -> None:
     parser.add_argument(
         "--managed-identity-client-id",
         default=None,
-        help="Client ID of a user-assigned identity, if the compute doesn't have a "
-        "system-assigned one.",
+        help="Client ID of the compute's user-assigned identity; omit to use its "
+        "system-assigned identity.",
     )
     args = parser.parse_args()
 

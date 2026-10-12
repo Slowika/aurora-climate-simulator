@@ -31,6 +31,10 @@ command: >-
 
 environment: azureml:aurora-cs-torch-env@latest
 
+# Mount the input assets as the compute's managed identity (the storage account is AAD-only).
+identity:
+  type: managed
+
 # Training benefits from a GPU compute target; nothing in the code requires one (falls back to
 # CPU), but real training runs will be far too slow without it.
 compute: azureml:<COMPUTE_NAME>

@@ -28,6 +28,11 @@ command: >-
 
 environment: azureml:aurora-cs-data-env@latest
 
+# The scripts authenticate to the workspace and its blob datastore as the compute's managed
+# identity; without this the job runs with no identity at all.
+identity:
+  type: managed
+
 compute: azureml:<COMPUTE_NAME>
 
 display_name: fetch_era5
@@ -45,5 +50,6 @@ inputs:
   subscription_id: <SUBSCRIPTION_ID>
   resource_group: <RESOURCE_GROUP>
   workspace_name: <WORKSPACE_NAME>
-  # Optional: only needed if the compute's identity is user-assigned rather than system-assigned.
-  managed_identity_client_id: ""
+  # Client ID of the compute's user-assigned identity. For a system-assigned identity, delete
+  # this input and the --managed-identity-client-id flag above (empty inputs are rejected).
+  managed_identity_client_id: <MANAGED_IDENTITY_CLIENT_ID>

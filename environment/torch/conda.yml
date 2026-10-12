@@ -10,8 +10,8 @@ dependencies:
       - torch
       - tqdm
       - pandas
-      - xarray
+      - xarray==2026.7.0
       - zarr<3
       - mlflow
-      - azureml-mlflow
+      - azureml-mlflow>=1.61
       - git+https://github.com/Slowika/aurora.git@58c1ee5dfc0ce21b58f89893a9d939e492cbbfdd

@@ -11,6 +11,7 @@
 # `era5_data` and `co2_data` should be registered assets (from fetch_era5 / fetch_co2_forcing).
 # `model_id` is a model registered by train_aurora_cs, as '<model_name>/<version>'.
 # Components are referenced by path, so no separate component registration is needed.
+# Each step runs as the compute's managed identity (the storage account is AAD-only).
 $schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
 type: pipeline
 
@@ -34,6 +35,8 @@ jobs:
   prepare_initial_condition:
     type: command
     component: ../rollout/prepare_initial_condition/component.yml
+    identity:
+      type: managed
     inputs:
       era5_data: ${{parent.inputs.era5_data}}
       start_time: ${{parent.inputs.start_time}}
@@ -41,6 +44,8 @@ jobs:
   prepare_forcing_trajectory:
     type: command
     component: ../rollout/prepare_forcing_trajectory/component.yml
+    identity:
+      type: managed
     inputs:
       co2_data: ${{parent.inputs.co2_data}}
       start_time: ${{parent.inputs.start_time}}
@@ -49,6 +54,8 @@ jobs:
   rollout_aurora_cs:
     type: command
     component: ../rollout/rollout_aurora_cs/component.yml
+    identity:
+      type: managed
     # The rollout benefits from a GPU compute target (falls back to CPU, but slowly).
     compute: azureml:<GPU_COMPUTE_NAME>
     inputs:
@@ -63,6 +70,8 @@ jobs:
   evaluate_rollout:
     type: command
     component: ../rollout/evaluate_rollout/component.yml
+    identity:
+      type: managed
     inputs:
       predictions: ${{parent.jobs.rollout_aurora_cs.outputs.predictions}}
       era5_data: ${{parent.inputs.era5_data}}
