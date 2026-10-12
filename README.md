@@ -1,3 +1,158 @@
-Initial Commit
+# Aurora-CS
 
-This repo will contain Aurora-CS code
+Aurora-CS is a CO2-conditioned climate emulator built on
+[Aurora](https://github.com/microsoft/aurora).
+The aim is to use Aurora for long-term climate simulations, while taking into account the variables
+that matter for long-term climate prediction.
+CO2 is supported today, and others, such as sea surface temperature (SST), are planned.
+The pretrained Aurora weights stay frozen.
+A small forcing encoder and per-block, zero-initialised AdaLN-Zero adapters learn to condition the
+forecast on atmospheric CO2.
+The result is a 6-hourly autoregressive rollout under a chosen CO2 trajectory.
+
+This repo is the canonical implementation of the AuroraCS model (the `aurora_cs` package).
+It also holds the associated scripts, run as Azure ML jobs: data fetching and training as single
+jobs, and rollout as a pipeline.
+
+## Repository structure
+
+```
+data/                        Data producers (ERA5 and CO2 fetch scripts, Azure ML helpers)
+training/train_aurora_cs/    Training script, component, and the `aurora_cs` model package
+rollout/                     Rollout pipeline components (see below)
+environment/                 Conda environments: `data` (fetching) and `torch` (training, rollout)
+jobs/                        Azure ML job YAMLs to submit (placeholders to fill in)
+tests/                       Unit tests (`pytest`)
+```
+
+This structure is likely to change, and the current organisation is not final.
+
+## Usage
+
+### Prerequisites
+
+- An Azure ML workspace with compute.
+  A GPU is strongly recommended, since training and rollout are impractically slow on CPU.
+  The data jobs and the rollout preparation steps are fine on CPU.
+- The compute's managed identity needs Storage Blob Data Contributor on the workspace storage
+  account, and a role that lets it register data assets in the workspace.
+- A restricted network may block outbound access.
+  Allow the hosts the jobs reach: `storage.googleapis.com` (ERA5), the ESGF servers
+  `esgf-data.dkrz.de` and `esgf.ceda.ac.uk` (CO2), `huggingface.co` and `*.hf.co` (the pretrained
+  checkpoint, downloaded at training time), plus PyPI, conda and `github.com` for environment
+  builds.
+- Register the two environments once:
+  ```bash
+  az ml environment create -f environment/data/environment.yml
+  az ml environment create -f environment/torch/environment.yml
+  ```
+
+Each job YAML in `jobs/` has `<PLACEHOLDERS>` for values you can supply at submit time with `--set`.
+Set up your shell once (the commands below use these variables):
+
+```bash
+az configure --defaults group=<resource-group> workspace=<workspace>
+CPU_COMPUTE=<cpu-cluster>
+GPU_COMPUTE=<gpu-cluster>
+# Workspace and identity inputs used by the data jobs:
+WS="inputs.subscription_id=<subscription-id> inputs.resource_group=<resource-group> \
+inputs.workspace_name=<workspace> inputs.managed_identity_client_id=<identity-client-id>"
+```
+
+Job names must be unique, so give every submission its own `--set name=...`.
+The examples encode the key parameters in the name; change them when you change the parameters.
+
+### 1. Fetch data (once)
+
+`jobs/fetch_era5_job.yml` fetches ERA5 initial conditions, and `jobs/fetch_co2_forcing_job.yml`
+fetches the CO2 series for an SSP scenario (`ssp126`, `ssp245`, `ssp370` or `ssp585`; coverage
+starts 2015-01).
+Both register an Azure ML data asset.
+Run each once for a given date range, unless you are adding a disjoint range.
+
+```bash
+az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
+  --set compute=azureml:$CPU_COMPUTE --set $WS \
+  --set inputs.start_date=2020-01-01 inputs.end_date=2020-01-31 \
+  --set inputs.prefix=era5 inputs.asset_name=era5-weather
+
+az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2020-01 \
+  --set compute=azureml:$CPU_COMPUTE --set $WS \
+  --set inputs.start_date=2020-01-01 inputs.end_date=2020-02-01 \
+  --set inputs.scenario=ssp245 inputs.output_path=co2.csv inputs.asset_name=co2-forcing
+```
+
+### 2. Train
+
+`jobs/train_aurora_cs_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
+network on one-step prediction over the ERA5 window, and registers the result as a model in Azure
+ML.
+
+```bash
+az ml job create -f jobs/train_aurora_cs_job.yml --set name=train-aurora-cs-2020-01-5ep \
+  --set compute=azureml:$GPU_COMPUTE \
+  --set inputs.era5_data.path=azureml:era5-weather@latest \
+  --set inputs.co2_data.path=azureml:co2-forcing@latest \
+  --set inputs.model_name=aurora-cs --set inputs.epochs=5
+```
+
+### 3. Roll out (repeatable)
+
+`jobs/rollout_pipeline_job.yml` can be run as often as you like.
+Its inputs are the two data assets, the registered model as `<name>/<version>`, a start time and a
+number of steps.
+The start time must lie inside the fetched ERA5 range, and the CO2 series must cover the rollout
+window.
+
+```bash
+az ml job create -f jobs/rollout_pipeline_job.yml --set name=rollout-aurora-cs-2020-01-02-40steps \
+  --set settings.default_compute=azureml:$CPU_COMPUTE \
+  --set jobs.rollout_aurora_cs.compute=azureml:$GPU_COMPUTE \
+  --set inputs.era5_data.path=azureml:era5-weather@latest \
+  --set inputs.co2_data.path=azureml:co2-forcing@latest \
+  --set inputs.model_id=aurora-cs/1 \
+  --set inputs.start_time=2020-01-02T00:00:00 --set inputs.num_steps=40
+```
+
+The pipeline runs four components.
+The two prepare steps are independent and feed the rollout:
+
+- `prepare_initial_condition` takes the ERA5 asset and the start time.
+  It writes `batch.pt`, an `aurora.Batch` holding the two-step history window (the start time and
+  the step 6 hours before it) of surface, atmospheric and static variables.
+- `prepare_forcing_trajectory` takes the CO2 asset, the start time and the number of steps.
+  It writes a 1-D tensor with the CO2 concentration (ppm) for each 6-hourly rollout step, repeating
+  the monthly value without interpolation.
+- `rollout_aurora_cs` takes both outputs and the registered model.
+  At each step the model predicts the next 6 hours conditioned on that step's CO2 value, and the
+  prediction is fed back in as the newest history step.
+  It writes one `step_NNNN.pt` (an `aurora.Batch`) per step and logs the CO2 value and a simple
+  summary of the prediction to MLflow.
+- `evaluate_rollout` takes the predictions and the ERA5 asset, plus an optional baseline rollout.
+  It is meant to score the predictions against ERA5, and against raw Aurora to show what the CO2
+  conditioning adds.
+  It is currently a stub that logs a warning and produces no output.
+
+## Upcoming features
+
+1. `rollout_aurora_cs` will write its predictions in NetCDF format and register them as an
+   Azure ML data asset.
+2. `evaluate_rollout` will be implemented, scoring predictions against ERA5 and, optionally, a
+   baseline rollout.
+   This needs a baseline mode for `rollout_aurora_cs`, which runs the frozen Aurora without forcing
+   from the same initial condition.
+   How the baseline is run and passed to `evaluate_rollout` is not decided yet.
+   The current pipeline structure may change, for example by splitting rollout and evaluation into
+   separate pipelines.
+3. The AuroraCS conditioning network will accept a vector of forcing variables instead of CO2
+   alone, with sea surface temperature (SST) the first addition.
+4. Continuous integration (CI) will be added.
+   There is currently no CI at all, so the unit tests only run when someone runs them by hand.
+   CI will run them on both CPU and GPU runners.
+   Some tests need a GPU and are skipped on machines without one.
+
+## Tests
+
+```bash
+pytest
+```
