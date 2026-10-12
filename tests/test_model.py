@@ -18,6 +18,7 @@ from aurora_cs.model import AuroraCS
 
 @pytest.fixture
 def tiny_batch() -> Batch:
+    torch.manual_seed(0)
     h = w = 16
     b, t, c = 1, 1, 3
     lat = torch.linspace(90, -90, h)
@@ -35,9 +36,8 @@ def tiny_batch() -> Batch:
     )
 
 
-def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
-    """Verifies that an AuroraCS model with a no-op conditioning network behaves identically
-    to the baseline Aurora."""
+def _tiny_model() -> AuroraCS:
+    torch.manual_seed(0)
     model = AuroraCS(
         encoder_depths=(2, 2),
         encoder_num_heads=(2, 2),
@@ -49,7 +49,28 @@ def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
         max_history_size=1,
         use_lora=False,
     )
+    # Aurora zero-inits each block's AdaLN modulation, which silences every block until trained;
+    # randomise it so the tiny backbone behaves like a pretrained one and adapters can matter.
+    with torch.no_grad():
+        for name, param in model.aurora.named_parameters():
+            if "ln_modulation" in name and param.dim() == 2:
+                torch.nn.init.normal_(param, std=0.1)
     model.eval()
+    return model
+
+
+def _surf_atmos(pred: Batch) -> list[torch.Tensor]:
+    return [*pred.surf_vars.values(), *pred.atmos_vars.values()]
+
+
+def _max_abs_diff(a: Batch, b: Batch) -> float:
+    return max((x - y).abs().max().item() for x, y in zip(_surf_atmos(a), _surf_atmos(b)))
+
+
+def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
+    """Verifies that an AuroraCS model with a no-op conditioning network behaves identically
+    to the baseline Aurora."""
+    model = _tiny_model()
 
     with torch.no_grad():
         conditioned = model(tiny_batch, forcing=417.0)
@@ -59,3 +80,44 @@ def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
         assert torch.equal(conditioned.surf_vars[name], baseline.surf_vars[name])
     for name in conditioned.atmos_vars:
         assert torch.equal(conditioned.atmos_vars[name], baseline.atmos_vars[name])
+
+
+def test_nonzero_adapters_change_outputs_and_depend_on_forcing(tiny_batch: Batch):
+    model = _tiny_model()
+    for head in model.block_heads:
+        torch.nn.init.normal_(head.weight, std=0.5)
+        torch.nn.init.normal_(head.bias, std=0.5)
+
+    with torch.no_grad():
+        baseline = model.aurora(tiny_batch)
+        low = model(tiny_batch, forcing=280.0)
+        high = model(tiny_batch, forcing=560.0)
+        high_again = model(tiny_batch, forcing=560.0)
+
+    assert _max_abs_diff(low, baseline) > 1e-4, "conditioning had no effect on the output"
+    assert _max_abs_diff(low, high) > 1e-4, "output does not depend on the forcing value"
+    assert _max_abs_diff(high, high_again) == 0.0, "same forcing must give the same output"
+
+
+def test_one_training_step_moves_only_the_conditioning_pathway(tiny_batch: Batch):
+    model = _tiny_model()
+    aurora_before = {k: v.clone() for k, v in model.aurora.state_dict().items()}
+    with torch.no_grad():
+        baseline = model.aurora(tiny_batch)
+
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.Adam(trainable, lr=1e-2)
+    target = {k: v + 1.0 for k, v in baseline.surf_vars.items()}
+    pred = model(tiny_batch, forcing=417.0)
+    loss = sum(torch.nn.functional.mse_loss(pred.surf_vars[k], target[k]) for k in target)
+    loss.backward()
+
+    assert all(p.grad is None for p in model.aurora.parameters()), "the base Aurora must stay frozen"
+    assert any(head.weight.grad.abs().max() > 0 for head in model.block_heads)
+    optimizer.step()
+
+    for k, v in model.aurora.state_dict().items():
+        assert torch.equal(v, aurora_before[k]), f"base Aurora weight {k} changed"
+    with torch.no_grad():
+        after = model(tiny_batch, forcing=417.0)
+    assert _max_abs_diff(after, baseline) > 1e-6, "training did not change the model's output"
