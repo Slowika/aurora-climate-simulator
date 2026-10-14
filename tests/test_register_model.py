@@ -29,6 +29,7 @@ TINY_CONFIG = dict(
     ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="no GPU"))],
 )
 def test_registered_model_round_trips(tmp_path, train_device):
+    """A model registered in MLflow loads back on the CPU with identical weights."""
     model = AuroraCS(**TINY_CONFIG).to(train_device)
     # Make the zero-initialised adapter heads non-trivial so the comparison is meaningful.
     for head in model.block_heads:

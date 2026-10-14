@@ -36,7 +36,8 @@ def tiny_batch() -> Batch:
     )
 
 
-def _tiny_model() -> AuroraCS:
+@pytest.fixture
+def tiny_model() -> AuroraCS:
     torch.manual_seed(0)
     model = AuroraCS(
         encoder_depths=(2, 2),
@@ -67,14 +68,13 @@ def _max_abs_diff(a: Batch, b: Batch) -> float:
     return max((x - y).abs().max().item() for x, y in zip(_surf_atmos(a), _surf_atmos(b)))
 
 
-def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
+def test_zero_init_adapters_are_a_no_op(tiny_model: AuroraCS, tiny_batch: Batch):
     """Verifies that an AuroraCS model with a no-op conditioning network behaves identically
     to the baseline Aurora."""
-    model = _tiny_model()
 
     with torch.no_grad():
-        conditioned = model(tiny_batch, forcing=417.0)
-        baseline = model.aurora(tiny_batch)
+        conditioned = tiny_model(tiny_batch, forcing=417.0)
+        baseline = tiny_model.aurora(tiny_batch)
 
     for name in conditioned.surf_vars:
         assert torch.equal(conditioned.surf_vars[name], baseline.surf_vars[name])
@@ -82,42 +82,48 @@ def test_zero_init_adapters_are_a_no_op(tiny_batch: Batch):
         assert torch.equal(conditioned.atmos_vars[name], baseline.atmos_vars[name])
 
 
-def test_nonzero_adapters_change_outputs_and_depend_on_forcing(tiny_batch: Batch):
-    model = _tiny_model()
-    for head in model.block_heads:
+def test_nonzero_adapters_change_outputs_and_depend_on_forcing(
+    tiny_model: AuroraCS, tiny_batch: Batch
+):
+    """Non-zero adapters change the output, deterministically and as a function of the forcing."""
+    for head in tiny_model.block_heads:
         torch.nn.init.normal_(head.weight, std=0.5)
         torch.nn.init.normal_(head.bias, std=0.5)
 
     with torch.no_grad():
-        baseline = model.aurora(tiny_batch)
-        low = model(tiny_batch, forcing=280.0)
-        high = model(tiny_batch, forcing=560.0)
-        high_again = model(tiny_batch, forcing=560.0)
+        baseline = tiny_model.aurora(tiny_batch)
+        low = tiny_model(tiny_batch, forcing=280.0)
+        high = tiny_model(tiny_batch, forcing=560.0)
+        high_again = tiny_model(tiny_batch, forcing=560.0)
 
     assert _max_abs_diff(low, baseline) > 1e-4, "conditioning had no effect on the output"
     assert _max_abs_diff(low, high) > 1e-4, "output does not depend on the forcing value"
     assert _max_abs_diff(high, high_again) == 0.0, "same forcing must give the same output"
 
 
-def test_one_training_step_moves_only_the_conditioning_pathway(tiny_batch: Batch):
-    model = _tiny_model()
-    aurora_before = {k: v.clone() for k, v in model.aurora.state_dict().items()}
+def test_one_training_step_moves_only_the_conditioning_pathway(
+    tiny_model: AuroraCS, tiny_batch: Batch
+):
+    """One optimiser step updates the conditioning pathway and leaves the frozen Aurora alone."""
+    aurora_before = {k: v.clone() for k, v in tiny_model.aurora.state_dict().items()}
     with torch.no_grad():
-        baseline = model.aurora(tiny_batch)
+        baseline = tiny_model.aurora(tiny_batch)
 
-    trainable = [p for p in model.parameters() if p.requires_grad]
+    trainable = [p for p in tiny_model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable, lr=1e-2)
     target = {k: v + 1.0 for k, v in baseline.surf_vars.items()}
-    pred = model(tiny_batch, forcing=417.0)
+    pred = tiny_model(tiny_batch, forcing=417.0)
     loss = sum(torch.nn.functional.mse_loss(pred.surf_vars[k], target[k]) for k in target)
     loss.backward()
 
-    assert all(p.grad is None for p in model.aurora.parameters()), "the base Aurora must stay frozen"
-    assert any(head.weight.grad.abs().max() > 0 for head in model.block_heads)
+    assert all(
+        p.grad is None for p in tiny_model.aurora.parameters()
+    ), "the base Aurora must stay frozen"
+    assert any(head.weight.grad.abs().max() > 0 for head in tiny_model.block_heads)
     optimizer.step()
 
-    for k, v in model.aurora.state_dict().items():
+    for k, v in tiny_model.aurora.state_dict().items():
         assert torch.equal(v, aurora_before[k]), f"base Aurora weight {k} changed"
     with torch.no_grad():
-        after = model(tiny_batch, forcing=417.0)
+        after = tiny_model(tiny_batch, forcing=417.0)
     assert _max_abs_diff(after, baseline) > 1e-6, "training did not change the model's output"
