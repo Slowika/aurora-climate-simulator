@@ -1,0 +1,77 @@
+# Submit the rollout pipeline (initial condition + forcing trajectory -> AuroraCS rollout ->
+# evaluation) on an existing compute:
+#
+#   az ml job create -f jobs/rollout_pipeline_job.yml --set name=<descriptive-unique-name>
+#
+# Fill in the placeholders below, or override individual ones at submit time, e.g.:
+#
+#   az ml job create -f jobs/rollout_pipeline_job.yml \
+#       --set inputs.num_steps=8 --set inputs.start_time=2020-06-01T00:00:00
+#
+# `era5_data` and `co2_data` should be registered assets (from fetch_era5 / fetch_co2_forcing).
+# `model_id` is a model registered by train_aurora_cs, as '<model_name>/<version>'.
+# Components are referenced by path, so no separate component registration is needed.
+# Each step runs as the compute's managed identity (the storage account is AAD-only).
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+
+display_name: rollout_aurora_cs
+
+settings:
+  default_compute: azureml:<COMPUTE_NAME>
+
+inputs:
+  era5_data:
+    type: uri_folder
+    path: azureml:<ERA5_ASSET_NAME>:<ERA5_ASSET_VERSION>
+  co2_data:
+    type: uri_file
+    path: azureml:<CO2_ASSET_NAME>:<CO2_ASSET_VERSION>
+  model_id: <MODEL_NAME>/<MODEL_VERSION>
+  start_time: <START_TIME>
+  num_steps: 40
+
+jobs:
+  prepare_initial_condition:
+    type: command
+    component: ../rollout/prepare_initial_condition/component.yml
+    identity:
+      type: managed
+    inputs:
+      era5_data: ${{parent.inputs.era5_data}}
+      start_time: ${{parent.inputs.start_time}}
+
+  prepare_forcing_trajectory:
+    type: command
+    component: ../rollout/prepare_forcing_trajectory/component.yml
+    identity:
+      type: managed
+    inputs:
+      co2_data: ${{parent.inputs.co2_data}}
+      start_time: ${{parent.inputs.start_time}}
+      num_steps: ${{parent.inputs.num_steps}}
+
+  rollout_aurora_cs:
+    type: command
+    component: ../rollout/rollout_aurora_cs/component.yml
+    identity:
+      type: managed
+    # The rollout benefits from a GPU compute target (falls back to CPU, but slowly).
+    compute: azureml:<GPU_COMPUTE_NAME>
+    inputs:
+      initial_condition: ${{parent.jobs.prepare_initial_condition.outputs.initial_condition}}
+      forcing_trajectory: ${{parent.jobs.prepare_forcing_trajectory.outputs.forcing_trajectory}}
+      model_id: ${{parent.inputs.model_id}}
+      num_steps: ${{parent.inputs.num_steps}}
+
+  # NOTE: evaluate_rollout is currently a stub that does nothing (it only logs a warning and
+  # produces no outputs); the step succeeds without evaluating anything.
+  # `baseline_predictions` (optional raw-Aurora rollout) is left unset.
+  evaluate_rollout:
+    type: command
+    component: ../rollout/evaluate_rollout/component.yml
+    identity:
+      type: managed
+    inputs:
+      predictions: ${{parent.jobs.rollout_aurora_cs.outputs.predictions}}
+      era5_data: ${{parent.inputs.era5_data}}

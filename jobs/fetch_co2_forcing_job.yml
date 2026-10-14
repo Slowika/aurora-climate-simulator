@@ -1,0 +1,56 @@
+# Submit a `fetch_co2_forcing` run as an Azure ML command job on an existing compute:
+#
+#   az ml job create -f jobs/fetch_co2_forcing_job.yml
+#
+# Fill in the placeholders below, or override individual ones at submit time, e.g.:
+#
+#   az ml job create -f jobs/fetch_co2_forcing_job.yml \
+#       --set inputs.scenario=ssp245 --set inputs.start_date=2020-01-01
+#
+# --scenario must be one of: ssp126, ssp245, ssp370, ssp585
+#
+# Runs `data.fetch_co2_forcing` in the `aurora-cs-data-env` environment (see fetch_era5_job.yml
+# for registration), with the inputs below forwarded as CLI args.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+code: ../data
+
+command: >-
+  python fetch_co2_forcing.py
+  --start-date ${{inputs.start_date}}
+  --end-date ${{inputs.end_date}}
+  --scenario ${{inputs.scenario}}
+  --output-path ${{inputs.output_path}}
+  --asset-name ${{inputs.asset_name}}
+  --subscription-id ${{inputs.subscription_id}}
+  --resource-group ${{inputs.resource_group}}
+  --workspace-name ${{inputs.workspace_name}}
+  --managed-identity-client-id ${{inputs.managed_identity_client_id}}
+
+environment: azureml:aurora-cs-data-env@latest
+
+# The scripts authenticate to the workspace and its blob datastore as the compute's managed
+# identity; without this the job runs with no identity at all.
+identity:
+  type: managed
+
+compute: azureml:<COMPUTE_NAME>
+
+display_name: fetch_co2_forcing
+
+# A single small file download - much lighter than fetch_era5.
+limits:
+  timeout: 1800
+
+inputs:
+  start_date: <START_DATE>
+  end_date: <END_DATE>
+  scenario: <SCENARIO>
+  output_path: <OUTPUT_PATH>
+  asset_name: <ASSET_NAME>
+  subscription_id: <SUBSCRIPTION_ID>
+  resource_group: <RESOURCE_GROUP>
+  workspace_name: <WORKSPACE_NAME>
+  # Client ID of the compute's user-assigned identity. For a system-assigned identity, delete
+  # this input and the --managed-identity-client-id flag above (empty inputs are rejected).
+  managed_identity_client_id: <MANAGED_IDENTITY_CLIENT_ID>

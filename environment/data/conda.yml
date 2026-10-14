@@ -1,0 +1,18 @@
+name: aurora-cs-data-env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy
+      - pandas
+      - xarray==2026.7.0
+      - zarr<3
+      - dask
+      - gcsfs
+      - adlfs
+      - netCDF4
+      - requests
+      - azure-ai-ml
+      - azure-identity

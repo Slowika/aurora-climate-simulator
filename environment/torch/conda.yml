@@ -1,0 +1,17 @@
+name: aurora-cs-torch-env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - git  # needed by pip to install aurora from the fork below
+  - pip:
+      - numpy
+      - torch
+      - tqdm
+      - pandas
+      - xarray==2026.7.0
+      - zarr<3
+      - mlflow
+      - azureml-mlflow>=1.61
+      - git+https://github.com/Slowika/aurora.git@58c1ee5dfc0ce21b58f89893a9d939e492cbbfdd

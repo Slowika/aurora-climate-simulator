@@ -1,0 +1,9 @@
+# Register once (re-run after editing conda.yml to publish a new version):
+#
+#   az ml environment create -f environment/data/environment.yml
+#
+# Used by the data producers in data/ (fetch_era5, fetch_co2_forcing). No torch/aurora.
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: aurora-cs-data-env
+image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+conda_file: conda.yml

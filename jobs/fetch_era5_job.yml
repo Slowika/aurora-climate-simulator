@@ -1,0 +1,55 @@
+# Submit a `fetch_era5` run as an Azure ML command job on an existing compute:
+#
+#   az ml job create -f jobs/fetch_era5_job.yml
+#
+# Fill in the placeholders below, or override individual ones at submit time, e.g.:
+#
+#   az ml job create -f jobs/fetch_era5_job.yml \
+#       --set inputs.start_date=2026-01-01 --set inputs.end_date=2026-02-28
+#
+# Runs `data.fetch_era5` in the `aurora-cs-data-env` environment (register it first with
+# `az ml environment create -f environment/data/environment.yml`), with the inputs below
+# forwarded as CLI args.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+code: ../data
+
+command: >-
+  python fetch_era5.py
+  --start-date ${{inputs.start_date}}
+  --end-date ${{inputs.end_date}}
+  --prefix ${{inputs.prefix}}
+  --asset-name ${{inputs.asset_name}}
+  --datastore-name ${{inputs.datastore_name}}
+  --subscription-id ${{inputs.subscription_id}}
+  --resource-group ${{inputs.resource_group}}
+  --workspace-name ${{inputs.workspace_name}}
+  --managed-identity-client-id ${{inputs.managed_identity_client_id}}
+
+environment: azureml:aurora-cs-data-env@latest
+
+# The scripts authenticate to the workspace and its blob datastore as the compute's managed
+# identity; without this the job runs with no identity at all.
+identity:
+  type: managed
+
+compute: azureml:<COMPUTE_NAME>
+
+display_name: fetch_era5
+
+# Fetching a month of atmospheric data at 6-hourly cadence takes ~1.6h; leave generous headroom.
+limits:
+  timeout: 21600
+
+inputs:
+  start_date: <START_DATE>
+  end_date: <END_DATE>
+  prefix: <PREFIX>
+  asset_name: <ASSET_NAME>
+  datastore_name: workspaceblobstore
+  subscription_id: <SUBSCRIPTION_ID>
+  resource_group: <RESOURCE_GROUP>
+  workspace_name: <WORKSPACE_NAME>
+  # Client ID of the compute's user-assigned identity. For a system-assigned identity, delete
+  # this input and the --managed-identity-client-id flag above (empty inputs are rejected).
+  managed_identity_client_id: <MANAGED_IDENTITY_CLIENT_ID>
