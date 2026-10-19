@@ -17,14 +17,30 @@ inputs:
   num_steps:
     type: integer
     description: Number of 6-hourly rollout steps.
-outputs:
-  predictions:
-    type: uri_folder
-    description: Per-step predictions, each a torch-saved aurora.Batch named step_<NNNN>.pt.
+  prefix:
+    type: string
+    description: Blob path prefix under the datastore; each step is written as <prefix>/<YYYYmmddTHHMMSS>.nc.
+  asset_name:
+    type: string
+    description: Name of the data asset registered over the NetCDF outputs.
+  datastore_name:
+    type: string
+    default: workspaceblobstore
+    description: Workspace blob datastore to write into.
+  subscription_id:
+    type: string
+  resource_group:
+    type: string
+  workspace_name:
+    type: string
+  managed_identity_client_id:
+    type: string
+    description: Client ID of the compute's user-assigned identity.
 code: .
 # The model is rebuilt from its registered weights + config using the `aurora_cs` package.
 additional_includes:
   - ../../training/train_aurora_cs/aurora_cs
+  - ../../data/azure_ml.py
 environment: azureml:aurora-cs-torch-env@latest
 command: >-
   python rollout_aurora_cs.py
@@ -32,4 +48,10 @@ command: >-
   --forcing-trajectory ${{inputs.forcing_trajectory}}
   --model-id ${{inputs.model_id}}
   --num-steps ${{inputs.num_steps}}
-  --predictions ${{outputs.predictions}}
+  --prefix ${{inputs.prefix}}
+  --asset-name ${{inputs.asset_name}}
+  --datastore-name ${{inputs.datastore_name}}
+  --subscription-id ${{inputs.subscription_id}}
+  --resource-group ${{inputs.resource_group}}
+  --workspace-name ${{inputs.workspace_name}}
+  --managed-identity-client-id ${{inputs.managed_identity_client_id}}

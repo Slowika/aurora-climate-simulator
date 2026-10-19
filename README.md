@@ -111,7 +111,10 @@ az ml job create -f jobs/rollout_pipeline_job.yml --set name=rollout-aurora-cs-2
   --set inputs.era5_data.path=azureml:era5-weather@latest \
   --set inputs.co2_data.path=azureml:co2-forcing@latest \
   --set inputs.model_id=aurora-cs/1 \
-  --set inputs.start_time=2020-01-02T00:00:00 --set inputs.num_steps=40
+  --set inputs.start_time=2020-01-02T00:00:00 --set inputs.num_steps=40 \
+  --set inputs.output_prefix=rollouts/2020-01-02 --set inputs.output_asset_name=rollout-2020-01-02 \
+  --set inputs.subscription_id=$SUBSCRIPTION_ID --set inputs.resource_group=$RESOURCE_GROUP \
+  --set inputs.workspace_name=$WORKSPACE_NAME --set inputs.managed_identity_client_id=$MI_CLIENT_ID
 ```
 
 The pipeline runs four components.
@@ -126,27 +129,28 @@ The two prepare steps are independent and feed the rollout:
 - `rollout_aurora_cs` takes both outputs and the registered model.
   At each step the model predicts the next 6 hours conditioned on that step's CO2 value, and the
   prediction is fed back in as the newest history step.
-  It writes one `step_NNNN.pt` (an `aurora.Batch`) per step and logs the CO2 value and a simple
-  summary of the prediction to MLflow.
-- `evaluate_rollout` takes the predictions and the ERA5 asset, plus an optional baseline rollout.
+  It logs the CO2 value and a simple summary of each prediction to MLflow, and writes every step
+  as NetCDF to `<output_prefix>/<YYYYmmddTHHMMSS>.nc` on the workspace blob datastore (the
+  timestamp is the time the prediction refers to), and registers the folder as the data asset
+  `output_asset_name`.
+- `evaluate_rollout` takes the ERA5 asset, plus optional predictions and baseline rollout (neither is wired
+  up yet).
   It is meant to score the predictions against ERA5, and against raw Aurora to show what the CO2
   conditioning adds.
   It is currently a stub that logs a warning and produces no output.
 
 ## Upcoming features
 
-1. `rollout_aurora_cs` will write its predictions in NetCDF format and register them as an
-   Azure ML data asset.
-2. `evaluate_rollout` will be implemented, scoring predictions against ERA5 and, optionally, a
+1. `evaluate_rollout` will be implemented, scoring predictions against ERA5 and, optionally, a
    baseline rollout.
    This needs a baseline mode for `rollout_aurora_cs`, which runs the frozen Aurora without forcing
    from the same initial condition.
    How the baseline is run and passed to `evaluate_rollout` is not decided yet.
    The current pipeline structure may change, for example by splitting rollout and evaluation into
    separate pipelines.
-3. The AuroraCS conditioning network will accept a vector of forcing variables instead of CO2
+2. The AuroraCS conditioning network will accept a vector of forcing variables instead of CO2
    alone, with sea surface temperature (SST) the first addition.
-4. Continuous integration (CI) will be added.
+3. Continuous integration (CI) will be added.
    There is currently no CI at all, so the unit tests only run when someone runs them by hand.
    CI will run them on both CPU and GPU runners.
    Some tests need a GPU and are skipped on machines without one.

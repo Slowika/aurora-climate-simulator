@@ -1,21 +1,26 @@
 """Pipeline component: run the AuroraCS autoregressive rollout.
 
 Loads a registered AuroraCS model and an initial condition, then steps the model forward
-`num_steps` times conditioned on a CO2 forcing trajectory, logging rollout progress to MLflow
-and saving each step's prediction as a `torch.save`d `aurora.Batch` at
-`<predictions>/step_<NNNN>.pt`.
+`num_steps` times conditioned on a CO2 forcing trajectory, logging rollout progress to MLflow.
+
+Every step's prediction is written as NetCDF to `<prefix>/<YYYYmmddTHHMMSS>.nc` on the workspace
+blob datastore (named after the time the prediction refers to), and the folder is registered as a
+data asset once the rollout is done.
 """
 
 import argparse
 import logging
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
 import mlflow
 import torch
+from azure.ai.ml.constants import AssetTypes
 from tqdm import tqdm
 
 from aurora_cs import load_checkpoint
+from azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -46,7 +51,18 @@ def main() -> None:
     parser.add_argument("--forcing-trajectory", required=True)
     parser.add_argument("--model-id", required=True, help="Registered model, e.g. 'aurora-cs-adapter/3'.")
     parser.add_argument("--num-steps", required=True, type=int)
-    parser.add_argument("--predictions", required=True)
+    parser.add_argument("--prefix", required=True, help="blob path prefix under the datastore")
+    parser.add_argument("--asset-name", required=True)
+    parser.add_argument("--datastore-name", default="workspaceblobstore")
+    parser.add_argument("--subscription-id", required=True)
+    parser.add_argument("--resource-group", required=True)
+    parser.add_argument("--workspace-name", required=True)
+    parser.add_argument(
+        "--managed-identity-client-id",
+        default=None,
+        help="Client ID of the compute's user-assigned identity; omit to use its "
+        "system-assigned identity.",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,8 +86,10 @@ def main() -> None:
             "it needs at least one value per rollout step."
         )
 
-    predictions_dir = Path(args.predictions)
-    predictions_dir.mkdir(parents=True, exist_ok=True)
+    prefix = args.prefix.strip("/")
+    identity = args.managed_identity_client_id or None
+    ml_client = get_ml_client(args.subscription_id, args.resource_group, args.workspace_name, identity)
+    fs, container = get_blob_filesystem(ml_client, args.datastore_name, identity)
 
     logger.info(f"Rolling out {args.num_steps} steps...")
     pbar = tqdm(range(args.num_steps), desc="Rolling out")
@@ -85,9 +103,22 @@ def main() -> None:
             mlflow.log_metric("forcing_co2_ppm", forcing[step].item(), step=step)
             mlflow.log_metric("mean_abs_surf", mean_abs_surf.item(), step=step)
             mlflow.log_metric("rollout_step", rollout_step, step=step)
-            torch.save(pred.to("cpu"), predictions_dir / f"step_{step:04d}.pt")
+            with tempfile.TemporaryDirectory() as tmp:
+                local = Path(tmp) / "step.nc"
+                pred.to("cpu").to_netcdf(local)
+                fs.put(str(local), f"{container}/{prefix}/{date:%Y%m%dT%H%M%S}.nc")
             batch = advance(batch, pred)
 
+    asset_path = f"azureml://datastores/{args.datastore_name}/paths/{prefix}"
+    logger.info(f"Registering '{args.asset_name}' from {asset_path}...")
+    register_data_asset(
+        ml_client,
+        name=args.asset_name,
+        path=asset_path,
+        asset_type=AssetTypes.URI_FOLDER,
+        description=f"AuroraCS rollout predictions, {args.num_steps} 6-hourly steps (NetCDF)",
+        version=next_version(ml_client, args.asset_name),
+    )
     logger.info("Rollout complete.")
 
 
