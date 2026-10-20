@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--predictions", required=True)
+    parser.add_argument("--predictions", required=False, default=None)
     parser.add_argument("--era5-data", required=True)
     parser.add_argument("--baseline-predictions", required=False, default=None)
     args = parser.parse_args()

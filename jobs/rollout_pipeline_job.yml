@@ -30,6 +30,13 @@ inputs:
   model_id: <MODEL_NAME>/<MODEL_VERSION>
   start_time: <START_TIME>
   num_steps: 40
+  # Each step is written to <output_prefix>/<timestamp>.nc and registered as `output_asset_name`.
+  output_prefix: <OUTPUT_PREFIX>
+  output_asset_name: <OUTPUT_ASSET_NAME>
+  subscription_id: <SUBSCRIPTION_ID>
+  resource_group: <RESOURCE_GROUP>
+  workspace_name: <WORKSPACE_NAME>
+  managed_identity_client_id: <MANAGED_IDENTITY_CLIENT_ID>
 
 jobs:
   prepare_initial_condition:
@@ -63,6 +70,12 @@ jobs:
       forcing_trajectory: ${{parent.jobs.prepare_forcing_trajectory.outputs.forcing_trajectory}}
       model_id: ${{parent.inputs.model_id}}
       num_steps: ${{parent.inputs.num_steps}}
+      prefix: ${{parent.inputs.output_prefix}}
+      asset_name: ${{parent.inputs.output_asset_name}}
+      subscription_id: ${{parent.inputs.subscription_id}}
+      resource_group: ${{parent.inputs.resource_group}}
+      workspace_name: ${{parent.inputs.workspace_name}}
+      managed_identity_client_id: ${{parent.inputs.managed_identity_client_id}}
 
   # NOTE: evaluate_rollout is currently a stub that does nothing (it only logs a warning and
   # produces no outputs); the step succeeds without evaluating anything.
@@ -73,5 +86,4 @@ jobs:
     identity:
       type: managed
     inputs:
-      predictions: ${{parent.jobs.rollout_aurora_cs.outputs.predictions}}
       era5_data: ${{parent.inputs.era5_data}}
