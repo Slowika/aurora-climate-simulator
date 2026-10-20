@@ -11,23 +11,42 @@ forecast on atmospheric CO2.
 The result is a 6-hourly autoregressive rollout under a chosen CO2 trajectory.
 
 This repo is the canonical implementation of the AuroraCS model (the `aurora_cs` package).
-It also holds the associated scripts, run as Azure ML jobs: data fetching and training as single
-jobs, and rollout as a pipeline.
+It also holds the associated scripts, run as Azure ML jobs: data fetching as command jobs,
+and training and rollout as pipelines.
 
 ## Repository structure
 
 ```
-data/                        Data producers (ERA5 and CO2 fetch scripts, Azure ML helpers)
-training/train_aurora_cs/    Training script, component, and the `aurora_cs` model package
-rollout/                     Rollout pipeline components (see below)
-environment/                 Conda environments: `data` (fetching) and `torch` (training, rollout)
-jobs/                        Azure ML job YAMLs to submit (placeholders to fill in)
-tests/                       Unit tests (`pytest`)
+aurora-climate-simulator/
+├── aurora_cs/                      The `aurora_cs` model package
+├── components/                     Azure ML component definitions
+|   ├── evaluate_rollout/           Rollout prediction evaluation
+|   ├── prepare_forcing_trajectory/ Rollout CO2 forcing trajectory preparation
+|   ├── prepare_initial_condition/  Rollout initial condition preparation
+|   ├── rollout_aurora_cs/          Autoregressive rollout execution
+|   └── train_aurora_cs/            Aurora CS training execution
+├── data/                           Data production scripts and Azure ML helpers
+├── environments/                   Azure ML Docker/Conda environment definitions
+|   ├── data/                       Data fetching environment
+|   └── torch/                      Training and rollout environment
+├── jobs/                           Azure ML job YAML definitions to submit (placeholders to fill in)
+└── tests/                          Unit tests (`pytest`)
 ```
 
 This structure is likely to change, and the current organisation is not final.
 
 ## Usage
+
+### Local
+
+Install [`uv`](https://docs.astral.sh/uv/) and run the below commands:
+
+```bash
+ uv venv
+ uv sync
+```
+
+Install the [`az` CLI and `ml` extension](https://learn.microsoft.com/en-us/azure/machine-learning/how-to-configure-cli?view=azureml-api-2&tabs=public).
 
 ### Prerequisites
 
@@ -43,8 +62,8 @@ This structure is likely to change, and the current organisation is not final.
   builds.
 - Register the two environments once:
   ```bash
-  az ml environment create -f environment/data/environment.yml
-  az ml environment create -f environment/torch/environment.yml
+  az ml environment create -f environments/data/environment.yml
+  az ml environment create -f environments/torch/environment.yml
   ```
 
 Each job YAML in `jobs/` has `<PLACEHOLDERS>` for values you can supply at submit time with `--set`.
@@ -84,12 +103,12 @@ az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2
 
 ### 2. Train
 
-`jobs/train_aurora_cs_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
+`jobs/train_aurora_cs_pipeline_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
 network on one-step prediction over the ERA5 window, and registers the result as a model in Azure
 ML.
 
 ```bash
-az ml job create -f jobs/train_aurora_cs_job.yml --set name=train-aurora-cs-2020-01-5ep \
+az ml job create -f jobs/train_aurora_cs_pipeline_job.yml --set name=train-aurora-cs-2020-01-5ep \
   --set compute=azureml:$GPU_COMPUTE \
   --set inputs.era5_data.path=azureml:era5-weather@latest \
   --set inputs.co2_data.path=azureml:co2-forcing@latest \

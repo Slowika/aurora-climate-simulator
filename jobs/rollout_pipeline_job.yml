@@ -41,7 +41,7 @@ inputs:
 jobs:
   prepare_initial_condition:
     type: command
-    component: ../rollout/prepare_initial_condition/component.yml
+    component: ../components/prepare_initial_condition/component.yml
     identity:
       type: managed
     inputs:
@@ -50,7 +50,7 @@ jobs:
 
   prepare_forcing_trajectory:
     type: command
-    component: ../rollout/prepare_forcing_trajectory/component.yml
+    component: ../components/prepare_forcing_trajectory/component.yml
     identity:
       type: managed
     inputs:
@@ -60,7 +60,7 @@ jobs:
 
   rollout_aurora_cs:
     type: command
-    component: ../rollout/rollout_aurora_cs/component.yml
+    component: ../components/rollout_aurora_cs/component.yml
     identity:
       type: managed
     # The rollout benefits from a GPU compute target (falls back to CPU, but slowly).
@@ -82,7 +82,7 @@ jobs:
   # `baseline_predictions` (optional raw-Aurora rollout) is left unset.
   evaluate_rollout:
     type: command
-    component: ../rollout/evaluate_rollout/component.yml
+    component: ../components/evaluate_rollout/component.yml
     identity:
       type: managed
     inputs:

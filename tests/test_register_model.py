@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from aurora_cs import AuroraCS, load_checkpoint
-from train_aurora_cs import register_model
+from components.train_aurora_cs.train_aurora_cs import register_model
 
 TINY_CONFIG = dict(
     encoder_depths=(2, 2),
@@ -37,7 +37,7 @@ def test_registered_model_round_trips(tmp_path, train_device):
 
     uri = f"sqlite:///{tmp_path}/mlflow.db"
     mlflow.set_tracking_uri(uri)
-    experiment_id = mlflow.create_experiment("t", artifact_location=str(tmp_path / "artifacts"))
+    experiment_id = mlflow.create_experiment("t", artifact_location=(tmp_path / "artifacts").as_uri())
     with mlflow.start_run(experiment_id=experiment_id):
         register_model(model, TINY_CONFIG, "aurora-cs-test")
 
