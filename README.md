@@ -103,12 +103,12 @@ az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2
 
 ### 2. Train
 
-`jobs/train_aurora_cs_pipeline_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
+`jobs/train_aurora_cs_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
 network on one-step prediction over the ERA5 window, and registers the result as a model in Azure
 ML.
 
 ```bash
-az ml job create -f jobs/train_aurora_cs_pipeline_job.yml --set name=train-aurora-cs-2020-01-5ep \
+az ml job create -f jobs/train_aurora_cs_job.yml --set name=train-aurora-cs-2020-01-5ep \
   --set compute=azureml:$GPU_COMPUTE \
   --set inputs.era5_data.path=azureml:era5-weather@latest \
   --set inputs.co2_data.path=azureml:co2-forcing@latest \
