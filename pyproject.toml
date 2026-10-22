@@ -1,0 +1,38 @@
+[project]
+name = "aurora-climate-simulator"
+version = "0.1.0"
+description = "Adapting a pretrained weather foundation model to emulate the atmospheric response to forcing (Aurora)."
+readme = "README.md"
+authors = [
+    { name = "Aga Slowik", email = "agaslowik@microsoft.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "adlfs>=2026.8.0",
+    "azure-ai-ml>=1.35.2",
+    "azureml-mlflow>=1.61",
+    "dask>=2026.8.0",
+    "gcsfs>=2026.10.0",
+    "microsoft-aurora",
+    "mlflow>=3.15.0",
+    "netcdf4>=1.7.4",
+    "torch>=2.14.1",
+    "tqdm>=4.70.1",
+    "xarray==2026.7.0",
+    "zarr<3",
+]
+
+[[tool.uv.index]]  # MSFT staff
+url = "https://packagefeedproxy.microsoft.io/pypi/simple"
+default = true
+
+[tool.uv.sources]
+microsoft-aurora = { git = "https://github.com/Slowika/aurora.git", rev = "58c1ee5dfc0ce21b58f89893a9d939e492cbbfdd" }
+
+[dependency-groups]
+test = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = "./"

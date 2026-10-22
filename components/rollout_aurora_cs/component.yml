@@ -39,8 +39,8 @@ inputs:
 code: .
 # The model is rebuilt from its registered weights + config using the `aurora_cs` package.
 additional_includes:
-  - ../../training/train_aurora_cs/aurora_cs
-  - ../../data/azure_ml.py
+  - ../../aurora_cs
+  - ../../data
 environment: azureml:aurora-cs-torch-env@latest
 command: >-
   python rollout_aurora_cs.py

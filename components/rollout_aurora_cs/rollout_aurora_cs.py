@@ -20,7 +20,7 @@ from azure.ai.ml.constants import AssetTypes
 from tqdm import tqdm
 
 from aurora_cs import load_checkpoint
-from azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
+from data.azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)

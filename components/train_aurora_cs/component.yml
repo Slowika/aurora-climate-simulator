@@ -34,3 +34,6 @@ command: >-
   --model-name ${{inputs.model_name}}
   --epochs ${{inputs.epochs}}
   --lr ${{inputs.lr}}
+
+additional_includes:
+  - ../../aurora_cs
