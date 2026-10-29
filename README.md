@@ -88,6 +88,9 @@ fetches the CO2 series for an SSP scenario (`ssp126`, `ssp245`, `ssp370` or `ssp
 starts 2015-01).
 Both register an Azure ML data asset.
 Run each once for a given date range, unless you are adding a disjoint range.
+A month interrupted part-way (for example by a failed job) is detected and fetched again on the
+next run, because a partly written shard still has its metadata but reads back as NaN where
+chunks are missing.
 
 ```bash
 az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
@@ -106,6 +109,12 @@ az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2
 `jobs/train_aurora_cs_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
 network on one-step prediction over the ERA5 window, and registers the result as a model in Azure
 ML.
+
+Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
+(1900-01-01, which contains missing data).
+Previously fetched assets may contain an all-NaN `static.zarr`: fixing the fetcher does not
+repair existing blobs, and rerunning it skips an existing static shard. Regenerate that shard
+from a valid timestamp before retraining; the monthly weather shards need not be refetched.
 
 ```bash
 az ml job create -f jobs/train_aurora_cs_job.yml --set name=train-aurora-cs-2020-01-5ep \
