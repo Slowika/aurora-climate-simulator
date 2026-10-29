@@ -143,6 +143,12 @@ without replacement, freshly for each epoch; the default `all` keeps the full pa
 `e`'s draw depends only on `e`, so a resumed run repeats it exactly. A checkpoint is refused if
 `samples_per_epoch` differs, because the epochs would no longer mean the same thing.
 
+The default loss (`inputs.loss=raw`) is MSE in physical units, so geopotential and pressure
+dominate and humidity is effectively ignored. `inputs.loss=normalised` divides each error by
+Aurora's per-variable and per-level scale, weights rows by cos(latitude), and averages surface
+and atmospheric variables as two equally weighted groups. Use a separate model name and
+checkpoint path for each loss: a checkpoint from one loss is refused by the other.
+
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
 (1900-01-01, which contains missing data). Training rejects non-finite static fields before
 loading the model, and checks weather inputs, forcing, targets, predictions, losses and
