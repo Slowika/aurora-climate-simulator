@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import fsspec
 import numpy as np
 import pandas as pd
 import pytest
@@ -43,3 +44,13 @@ def shard(tmp_path, write_shard):
     path = tmp_path / "1995-08.zarr"
     times = write_shard(path)
     return path, times
+
+
+@pytest.fixture
+def remote():
+    """An in-memory filesystem standing in for blob storage: no real directories, flat names."""
+    fs = fsspec.filesystem("memory")
+    fs.store.clear()
+    fs.pseudo_dirs[:] = [""]
+    yield fs
+    fs.store.clear()
