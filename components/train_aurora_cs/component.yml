@@ -44,6 +44,12 @@ inputs:
     type: integer
     default: 2000
     description: Number of optimiser steps between resumable checkpoints.
+  samples_per_epoch:
+    type: integer
+    optional: true
+    description: >-
+      Examples drawn uniformly at random (without replacement) for each epoch. Omit to use
+      every example, shuffled.
   start_date:
     type: string
     optional: true
@@ -65,6 +71,7 @@ command: >-
   $[[--checkpoint-account ${{inputs.checkpoint_account}}]]
   $[[--checkpoint-container ${{inputs.checkpoint_container}}]]
   --checkpoint-every ${{inputs.checkpoint_every}}
+  $[[--samples-per-epoch ${{inputs.samples_per_epoch}}]]
   $[[--start-date ${{inputs.start_date}}]]
   $[[--end-date ${{inputs.end_date}}]]
 
