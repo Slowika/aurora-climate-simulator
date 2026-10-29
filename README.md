@@ -137,6 +137,12 @@ If a job fails, resubmit it with the same prefix and it resumes from the newest 
 A checkpoint is refused if the learning rate, date window or model config differ; use a new
 prefix to start fresh. `epochs` may be raised on resume to extend a finished run.
 
+An epoch is normally every example in the window (about 38,000 steps for 1990-2015). Set
+`inputs.samples_per_epoch=100` to make each epoch draw 100 examples uniformly at random,
+without replacement, freshly for each epoch; the default `all` keeps the full pass. Epoch
+`e`'s draw depends only on `e`, so a resumed run repeats it exactly. A checkpoint is refused if
+`samples_per_epoch` differs, because the epochs would no longer mean the same thing.
+
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
 (1900-01-01, which contains missing data). Training rejects non-finite static fields before
 loading the model, and checks weather inputs, forcing, targets, predictions, losses and
