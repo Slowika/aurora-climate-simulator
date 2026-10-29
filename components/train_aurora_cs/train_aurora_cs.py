@@ -9,8 +9,11 @@ forced, single-step training - no autoregressive rollout.
 """
 
 import argparse
+import json
 import logging
+import math
 import random
+import re
 import tempfile
 from pathlib import Path
 
@@ -161,6 +164,31 @@ def discover_examples(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
     ]
 
 
+def find_incomplete_shards(era5_data: Path, examples: list[pd.Timestamp]) -> dict[str, list[str]]:
+    """Monthly shards used by `examples` whose weather variables have unwritten chunks.
+
+    Unwritten zarr chunks read back as NaN, and an interrupted fetch leaves the shard's metadata
+    in place, so a damaged shard looks fine until the first example that touches it.
+    """
+    months = sorted({(t.year, t.month) for cur in examples for t in (cur - SIX_HOURS, cur, cur + SIX_HOURS)})
+    problems: dict[str, list[str]] = {}
+    for year, month in months:
+        shard = era5_data / f"{year}-{month:02d}.zarr"
+        for name in [*SURF_VAR_MAP.values(), *ATMOS_VAR_MAP.values()]:
+            try:
+                meta = json.loads((shard / name / ".zarray").read_text())
+                expected = math.prod(-(-size // chunk) for size, chunk in zip(meta["shape"], meta["chunks"]))
+                written = sum(
+                    bool(re.fullmatch(r"\d+(\.\d+)*", p.name)) for p in (shard / name).iterdir()
+                )
+            except FileNotFoundError:
+                problems.setdefault(shard.name, []).append(f"{name}: missing")
+                continue
+            if written != expected:
+                problems.setdefault(shard.name, []).append(f"{name}: {written}/{expected} chunks")
+    return problems
+
+
 def load_example(
     era5_data: Path,
     cache: dict,
@@ -174,21 +202,37 @@ def load_example(
     step, and the ground-truth next step (left on the CPU)."""
     next_t = cur_t + SIX_HOURS
     batch = build_batch(era5_data, cache, static, cur_t).to(device)
+    for group, variables in (("surf_vars", batch.surf_vars), ("atmos_vars", batch.atmos_vars)):
+        for name, value in variables.items():
+            require_finite(value, f"input.{group}.{name}, history ending {cur_t}")
     target = load_target(era5_data, cache, next_t, batch.metadata.lat.shape[0])
-    return batch, co2_ppm_for(co2, next_t), target
+    forcing = co2_ppm_for(co2, next_t)
+    if not math.isfinite(forcing):
+        raise FloatingPointError(f"Non-finite CO2 forcing at {next_t}.")
+    return batch, forcing, target
+
+
+def require_finite(value: torch.Tensor, context: str) -> None:
+    if not torch.isfinite(value).all().item():
+        raise FloatingPointError(f"Non-finite values in {context}.")
 
 
 def step_loss(pred: Batch, target: dict) -> torch.Tensor:
     """Mean MSE across all surf/atmos variables between a one-step prediction and a
     ground-truth snapshot (as produced by `load_target`)."""
-    losses = [
-        F.mse_loss(pred.surf_vars[k], v.to(pred.surf_vars[k]))
-        for k, v in target["surf_vars"].items()
-    ] + [
-        F.mse_loss(pred.atmos_vars[k], v.to(pred.atmos_vars[k]))
-        for k, v in target["atmos_vars"].items()
-    ]
-    return torch.stack(losses).mean()
+    losses = []
+    for group, variables in (("surf_vars", pred.surf_vars), ("atmos_vars", pred.atmos_vars)):
+        for name, value in target[group].items():
+            context = f"{group}.{name} at {pred.metadata.time[0]}"
+            expected = value.to(variables[name])
+            require_finite(expected, f"target.{context}")
+            require_finite(variables[name], f"prediction.{context}")
+            loss = F.mse_loss(variables[name], expected)
+            require_finite(loss, f"loss.{context}")
+            losses.append(loss)
+    loss = torch.stack(losses).mean()
+    require_finite(loss, f"total loss at {pred.metadata.time[0]}")
+    return loss
 
 
 def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
@@ -217,6 +261,8 @@ def main() -> None:
 
     cache: dict = {}
     static = xr.open_zarr(str(era5_data / "static.zarr"), chunks=None)
+    for name in STATIC_VAR_MAP.values():
+        require_finite(torch.as_tensor(static[name].values), f"ERA5 static.{name}")
     examples = discover_examples(era5_data, cache)
     if not examples:
         raise RuntimeError(
@@ -224,6 +270,13 @@ def main() -> None:
             "consecutive 6-hourly steps."
         )
     logger.info(f"Found {len(examples)} training example(s) in {era5_data}.")
+    problems = find_incomplete_shards(era5_data, examples)
+    if problems:
+        details = "; ".join(f"{shard}: {', '.join(issues)}" for shard, issues in problems.items())
+        raise RuntimeError(
+            f"{len(problems)} ERA5 shard(s) in the training window are incomplete: {details}. "
+            "Fetch those months again with fetch_era5."
+        )
 
     logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
     model = AuroraCS(**MODEL_CONFIG).to(device)
@@ -244,6 +297,13 @@ def main() -> None:
             pred = model(batch, forcing=forcing)
             loss = step_loss(pred, target)
             loss.backward()
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    require_finite(
+                        param.grad,
+                        f"gradient.{name}, epoch={epoch}, step={global_step}, "
+                        f"target time={cur_t + SIX_HOURS}",
+                    )
             optimizer.step()
             mlflow.log_metric("loss", loss.item(), step=global_step)
             epoch_loss += loss.item()
