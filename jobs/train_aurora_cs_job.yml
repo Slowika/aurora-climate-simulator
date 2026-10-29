@@ -30,6 +30,15 @@ inputs:
   model_name: <MODEL_NAME>
   epochs: 5
   lr: 0.0001
+  # Resumable checkpoints, written to <container>/<checkpoint_prefix>/ in the storage account.
+  # The prefix is fixed (not per-job) so that resubmitting after a failure with the same prefix
+  # resumes from the newest checkpoint. Use a new prefix to start fresh. Set the account and
+  # container to those of the workspace datastore (`az ml datastore show -n workspaceblobstore`).
+  checkpoint_prefix: checkpoints/<MODEL_NAME>
+  checkpoint_account: <STORAGE_ACCOUNT>
+  checkpoint_container: <BLOB_CONTAINER>
+  # Steps between checkpoints (an epoch is tens of thousands of steps).
+  checkpoint_every: 2000
   # Inclusive YYYY-MM-DD bounds. Pipeline inputs need a value, so use "unbounded"
   # to preserve training on the full ERA5 asset when no date restriction is wanted.
   start_date: unbounded
@@ -47,6 +56,10 @@ jobs:
       lr: ${{inputs.lr}}
       start_date: ${{inputs.start_date}}
       end_date: ${{inputs.end_date}}
+      checkpoint_prefix: ${{inputs.checkpoint_prefix}}
+      checkpoint_account: ${{inputs.checkpoint_account}}
+      checkpoint_container: ${{inputs.checkpoint_container}}
+      checkpoint_every: ${{inputs.checkpoint_every}}
     # Training benefits from a GPU compute target; nothing in the code requires one (falls back to
     # CPU), but real training runs will be far too slow without it.
     compute: azureml:<COMPUTE_NAME>
@@ -59,7 +72,10 @@ settings:
 
 # Mount the input assets as the compute's managed identity (the storage account is AAD-only).
 # (OPTIONAL) use the identity.client_id field to specify a managed identity
-# Training also uses the compute's user-assigned identity for MLflow, not the submitter's
-# expiring run token. This identity needs AzureML Data Scientist on the workspace.
+# Training also uses the compute's user-assigned identity for MLflow and for writing checkpoints
+# straight to blob storage, so nothing depends on the submitter's role (e.g. an expiring PIM
+# activation). That identity needs AzureML Data Scientist on the workspace and Storage Blob Data
+# Contributor on the storage account. Checkpoints are deliberately not a registered job output:
+# registering one at the end of the job failed once the submitter's role had expired.
 identity:
   type: managed
