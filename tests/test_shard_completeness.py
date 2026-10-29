@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from components.train_aurora_cs import train_aurora_cs as training
+
 
 @pytest.fixture
 def fetcher(monkeypatch):
@@ -64,3 +66,29 @@ def test_shard_missing_a_variable_is_incomplete(fetcher, shard):
 
 def test_shard_without_the_weather_data_is_incomplete(fetcher, tmp_path):
     assert not fetcher.shard_is_complete(fsspec.filesystem("file"), str(tmp_path / "absent.zarr"))
+
+
+def test_training_accepts_complete_shards(shard):
+    path, times = shard
+    assert training.find_incomplete_shards(path.parent, [times[1], times[2]]) == {}
+
+
+def test_training_reports_every_damaged_variable(shard):
+    path, times = shard
+    remove_chunks(path, "2m_temperature")
+    remove_chunks(path, "temperature", 1)
+    problems = training.find_incomplete_shards(path.parent, [times[1]])
+    assert problems == {"1995-08.zarr": ["2m_temperature: 0/4 chunks", "temperature: 3/4 chunks"]}
+
+
+def test_training_only_checks_shards_it_will_read(fetcher, shard):
+    path, times = shard
+    remove_chunks(path, "2m_temperature")  # August is damaged, but no example touches it
+    write_shard(fetcher, path.parent / "1995-09.zarr")
+    assert training.find_incomplete_shards(path.parent, [pd.Timestamp("1995-09-01 06:00")]) == {}
+
+
+def test_training_flags_a_shard_with_no_metadata(tmp_path):
+    problems = training.find_incomplete_shards(tmp_path, [pd.Timestamp("1995-08-01 06:00")])
+    assert set(problems) == {"1995-08.zarr"}
+    assert all(issue.endswith("missing") for issue in problems["1995-08.zarr"])
