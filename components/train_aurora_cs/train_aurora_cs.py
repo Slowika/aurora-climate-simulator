@@ -15,6 +15,7 @@ import math
 import random
 import re
 import tempfile
+from datetime import date
 from pathlib import Path
 
 import mlflow
@@ -152,11 +153,21 @@ def load_target(era5_data: Path, cache: dict, when: pd.Timestamp, crop_h: int) -
     }
 
 
-def discover_examples(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
+def discover_examples(
+    era5_data: Path,
+    cache: dict,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[pd.Timestamp]:
     """The middle timestamp of every adjacent triple of 6-hourly steps in `era5_data`: the
     history window ends there and the next step is the target. Triples spanning a gap in
-    coverage (e.g. a non-contiguous fetch) are skipped."""
+    coverage (e.g. a non-contiguous fetch) are skipped. All three timestamps must fall
+    within the optional, inclusive date bounds."""
     times = discover_times(era5_data, cache)
+    if start_date is not None:
+        times = [t for t in times if t.date() >= start_date]
+    if end_date is not None:
+        times = [t for t in times if t.date() <= end_date]
     return [
         cur_t
         for prev_t, cur_t, next_t in zip(times, times[1:], times[2:])
@@ -243,6 +254,11 @@ def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
     mlflow.register_model(f"{mlflow.active_run().info.artifact_uri}/model", model_name)
 
 
+def parse_date(value: str) -> date | None:
+    """Accept an ISO date or the command job template's explicit unbounded default."""
+    return None if value == "unbounded" else date.fromisoformat(value)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--era5-data", required=True)
@@ -250,7 +266,15 @@ def main() -> None:
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
+    )
+    parser.add_argument(
+        "--end-date", type=parse_date, help="Last training date, inclusive (YYYY-MM-DD)."
+    )
     args = parser.parse_args()
+    if args.start_date is not None and args.end_date is not None and args.start_date > args.end_date:
+        parser.error("--start-date must be on or before --end-date")
 
     configure_mlflow_auth()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -263,19 +287,23 @@ def main() -> None:
     static = xr.open_zarr(str(era5_data / "static.zarr"), chunks=None)
     for name in STATIC_VAR_MAP.values():
         require_finite(torch.as_tensor(static[name].values), f"ERA5 static.{name}")
-    examples = discover_examples(era5_data, cache)
+    examples = discover_examples(era5_data, cache, args.start_date, args.end_date)
     if not examples:
         raise RuntimeError(
-            "No adjacent-triple training examples found - era5_data needs at least 3 "
-            "consecutive 6-hourly steps."
+            "No adjacent-triple training examples found in the selected date range - "
+            "era5_data needs at least 3 consecutive 6-hourly steps within that range."
         )
     logger.info(f"Found {len(examples)} training example(s) in {era5_data}.")
+    logger.info(
+        f"Training history/target coverage: {examples[0] - SIX_HOURS} to "
+        f"{examples[-1] + SIX_HOURS}."
+    )
     problems = find_incomplete_shards(era5_data, examples)
     if problems:
         details = "; ".join(f"{shard}: {', '.join(issues)}" for shard, issues in problems.items())
         raise RuntimeError(
             f"{len(problems)} ERA5 shard(s) in the training window are incomplete: {details}. "
-            "Fetch those months again with fetch_era5."
+            "Fetch those months again with fetch_era5, or narrow --start-date/--end-date."
         )
 
     logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")

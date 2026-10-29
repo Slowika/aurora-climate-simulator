@@ -26,6 +26,14 @@ inputs:
     type: number
     default: 0.0001
     description: Adam learning rate.
+  start_date:
+    type: string
+    optional: true
+    description: First training date (YYYY-MM-DD), inclusive of history and target timestamps.
+  end_date:
+    type: string
+    optional: true
+    description: Last training date (YYYY-MM-DD), inclusive of history and target timestamps.
 code: .
 environment: azureml:aurora-cs-torch-env@latest
 command: >-
@@ -35,6 +43,8 @@ command: >-
   --model-name ${{inputs.model_name}}
   --epochs ${{inputs.epochs}}
   --lr ${{inputs.lr}}
+  $[[--start-date ${{inputs.start_date}}]]
+  $[[--end-date ${{inputs.end_date}}]]
 
 additional_includes:
   - ../../aurora_cs

@@ -117,6 +117,13 @@ AzureML Data Scientist on the workspace, in addition to its storage permissions.
 The script discards the submitter-scoped tracking token so an expiring user PIM activation
 does not interrupt long runs. Local training keeps its existing MLflow authentication.
 
+Use `inputs.start_date=1990-01-01 inputs.end_date=2015-12-31` to restrict training to
+those dates, inclusive. Both history steps and the target must lie inside the window.
+Each bound defaults to `unbounded`, preserving training on all available ERA5 timestamps.
+Filtering does not fetch missing ERA5 data: the asset must already contain the requested
+months, and missing/gapped examples are skipped. Ensure the CO2 CSV covers those months too.
+For multi-year training, increase `limits.timeout` from its two-hour default.
+
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
 (1900-01-01, which contains missing data). Training rejects non-finite static fields before
 loading the model, and checks weather inputs, forcing, targets, predictions, losses and
