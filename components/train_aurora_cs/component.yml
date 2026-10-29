@@ -26,6 +26,24 @@ inputs:
     type: number
     default: 0.0001
     description: Adam learning rate.
+  checkpoint_prefix:
+    type: string
+    optional: true
+    description: >-
+      Blob path prefix for resumable checkpoints, written as the compute's identity. A rerun
+      with the same prefix resumes. Needs checkpoint_account and checkpoint_container.
+  checkpoint_account:
+    type: string
+    optional: true
+    description: Storage account holding the checkpoints.
+  checkpoint_container:
+    type: string
+    optional: true
+    description: Blob container holding the checkpoints.
+  checkpoint_every:
+    type: integer
+    default: 2000
+    description: Number of optimiser steps between resumable checkpoints.
   start_date:
     type: string
     optional: true
@@ -43,6 +61,10 @@ command: >-
   --model-name ${{inputs.model_name}}
   --epochs ${{inputs.epochs}}
   --lr ${{inputs.lr}}
+  $[[--checkpoint-prefix ${{inputs.checkpoint_prefix}}]]
+  $[[--checkpoint-account ${{inputs.checkpoint_account}}]]
+  $[[--checkpoint-container ${{inputs.checkpoint_container}}]]
+  --checkpoint-every ${{inputs.checkpoint_every}}
   $[[--start-date ${{inputs.start_date}}]]
   $[[--end-date ${{inputs.end_date}}]]
 

@@ -124,6 +124,19 @@ Filtering does not fetch missing ERA5 data: the asset must already contain the r
 months, and missing/gapped examples are skipped. Ensure the CO2 CSV covers those months too.
 For multi-year training, increase `limits.timeout` from its two-hour default.
 
+Training writes resumable checkpoints (trainable weights, optimiser state and position in the
+epoch) every `checkpoint_every` steps, keeping the newest two. They go straight to blob storage
+as the compute's managed identity, not through a registered job output: registering an output at
+the end of a long job depends on the submitter's role, which failed once that role had expired.
+Set `inputs.checkpoint_prefix` (e.g. `checkpoints/aurora-cs-1990-2015`),
+`inputs.checkpoint_account` and `inputs.checkpoint_container` to a location in the workspace
+storage (`az ml datastore show -n workspaceblobstore` shows the account and container). The
+compute's identity needs Storage Blob Data Contributor there. Training checks it can write
+there before loading any data, so a permission problem shows up in the first minute.
+If a job fails, resubmit it with the same prefix and it resumes from the newest checkpoint.
+A checkpoint is refused if the learning rate, date window or model config differ; use a new
+prefix to start fresh. `epochs` may be raised on resume to extend a finished run.
+
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
 (1900-01-01, which contains missing data). Training rejects non-finite static fields before
 loading the model, and checks weather inputs, forcing, targets, predictions, losses and
