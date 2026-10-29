@@ -21,7 +21,7 @@ import torch.nn.functional as F
 import xarray as xr
 
 from aurora import Batch, Metadata
-from aurora_cs import AuroraCS, save_checkpoint
+from aurora_cs import AuroraCS, configure_mlflow_auth, save_checkpoint
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -208,6 +208,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     args = parser.parse_args()
 
+    configure_mlflow_auth()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
