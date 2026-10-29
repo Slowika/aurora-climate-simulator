@@ -5,10 +5,14 @@ checkpoint interrupted mid-write is never picked up. Files are never overwritten
 trainable weights are stored: the wrapped Aurora is frozen and reloaded from its pretrained
 checkpoint.
 
-Checkpoints live on any fsspec filesystem (see `open_checkpoint_store`).
+Checkpoints live on any fsspec filesystem: a local directory, or Azure blob storage reached as
+the compute's managed identity (see `open_checkpoint_store`). Writing to blob storage directly,
+rather than through a registered job output, means nothing at the end of the job depends on the
+submitter's permissions.
 """
 
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -30,12 +34,52 @@ def _is_local(fs) -> bool:
     return isinstance(fs, fsspec.implementations.local.LocalFileSystem)
 
 
-def open_checkpoint_store(directory: str | None = None):
-    """`(filesystem, path)` for the checkpoints in a local `directory`, or `(None, None)` if
-    checkpointing is off."""
-    if not directory:
+def open_checkpoint_store(
+    directory: str | None = None,
+    *,
+    prefix: str | None = None,
+    account: str | None = None,
+    container: str | None = None,
+):
+    """`(filesystem, path)` for the checkpoints, or `(None, None)` if checkpointing is off.
+
+    Give either a local `directory`, or blob storage as `prefix` + `account` + `container`. On
+    Azure ML the blob filesystem authenticates as the compute's user-assigned identity
+    (`DEFAULT_IDENTITY_CLIENT_ID`), as the fetch jobs do; elsewhere it uses the default Azure
+    credential chain.
+    """
+    if directory and prefix:
+        raise ValueError("Give either a local checkpoint directory or a blob prefix, not both.")
+    if directory:
+        return fsspec.filesystem("file"), str(directory)
+    if not prefix:
         return None, None
-    return fsspec.filesystem("file"), str(directory)
+    for name, value in (("account", account), ("container", container), ("prefix", prefix)):
+        if not value:
+            raise ValueError(f"Blob checkpoints need a storage {name}.")
+        if "<" in value or ">" in value:
+            raise ValueError(f"Checkpoint {name} '{value}' is an unfilled placeholder.")
+
+    import adlfs
+    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+
+    if os.environ.get("AZUREML_RUN_ID"):
+        credential = ManagedIdentityCredential(
+            client_id=os.environ.get("DEFAULT_IDENTITY_CLIENT_ID") or None
+        )
+    else:
+        credential = DefaultAzureCredential()
+    fs = adlfs.AzureBlobFileSystem(account_name=account, credential=credential)
+    return fs, f"{container}/{prefix.strip('/')}"
+
+
+def check_writable(fs, directory: str) -> None:
+    """Fail now, not hours in, if checkpoints cannot be written and removed."""
+    probe = f"{directory}/.write-check"
+    if _is_local(fs):
+        fs.makedirs(directory, exist_ok=True)
+    fs.pipe_file(probe, b"ok")
+    fs.rm(probe)
 
 
 def save_training_state(

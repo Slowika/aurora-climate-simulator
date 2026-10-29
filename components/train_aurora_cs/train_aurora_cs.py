@@ -27,6 +27,7 @@ import xarray as xr
 from aurora import Batch, Metadata
 from aurora_cs import AuroraCS, configure_mlflow_auth, save_checkpoint
 from aurora_cs.training_checkpoint import (
+    check_writable,
     load_latest_training_state,
     open_checkpoint_store,
     restore_training_state,
@@ -343,8 +344,15 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument(
         "--checkpoint-dir",
-        help="Folder for resumable checkpoints; training resumes from the newest one found there.",
+        help="Local folder for resumable checkpoints; training resumes from the newest one found.",
     )
+    parser.add_argument(
+        "--checkpoint-prefix",
+        help="Blob path prefix for resumable checkpoints, written as the compute's identity. "
+        "Needs --checkpoint-account and --checkpoint-container.",
+    )
+    parser.add_argument("--checkpoint-account", help="Storage account holding the checkpoints.")
+    parser.add_argument("--checkpoint-container", help="Blob container holding the checkpoints.")
     parser.add_argument("--checkpoint-every", type=int, default=2000, help="Steps between checkpoints.")
     parser.add_argument(
         "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
@@ -355,9 +363,21 @@ def main() -> None:
     args = parser.parse_args()
     if args.start_date is not None and args.end_date is not None and args.start_date > args.end_date:
         parser.error("--start-date must be on or before --end-date")
-    checkpoint_fs, checkpoint_path = open_checkpoint_store(args.checkpoint_dir)
+    try:
+        checkpoint_fs, checkpoint_path = open_checkpoint_store(
+            args.checkpoint_dir,
+            prefix=args.checkpoint_prefix,
+            account=args.checkpoint_account,
+            container=args.checkpoint_container,
+        )
+    except ValueError as e:
+        parser.error(str(e))
 
     configure_mlflow_auth()
+    if checkpoint_fs is not None:
+        # Before any data loading or training, so a permission or network problem shows up now.
+        check_writable(checkpoint_fs, checkpoint_path)
+        logger.info(f"Checkpoints: {checkpoint_path} (writable)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
