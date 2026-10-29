@@ -30,6 +30,10 @@ inputs:
   model_name: <MODEL_NAME>
   epochs: 5
   lr: 0.0001
+  # Inclusive YYYY-MM-DD bounds. Pipeline inputs need a value, so use "unbounded"
+  # to preserve training on the full ERA5 asset when no date restriction is wanted.
+  start_date: unbounded
+  end_date: unbounded
 
 jobs:
   train_aurora_cs:
@@ -41,6 +45,8 @@ jobs:
       model_name: ${{inputs.model_name}}
       epochs: ${{inputs.epochs}}
       lr: ${{inputs.lr}}
+      start_date: ${{inputs.start_date}}
+      end_date: ${{inputs.end_date}}
     # Training benefits from a GPU compute target; nothing in the code requires one (falls back to
     # CPU), but real training runs will be far too slow without it.
     compute: azureml:<COMPUTE_NAME>
