@@ -5,15 +5,20 @@ Azure ML data asset, written directly to the workspace's blob datastore, e.g.:
         --prefix era5 --asset-name era5-weather \\
         --subscription-id ... --resource-group ... --workspace-name ...
 
-Re-running with an overlapping or extended date range only writes the months not already present
-under `--prefix`, then registers a new version of the asset over the (now larger) folder.
+Re-running with an overlapping or extended date range only writes the months that are not already
+complete under `--prefix` (a month interrupted part-way is fetched again), then registers a new
+version of the asset over the (now larger) folder.
 """
 
 import argparse
 import calendar
+import json
 import logging
+import math
+import re
 
 import gcsfs
+import numpy as np
 import pandas as pd
 import xarray as xr
 from azure.ai.ml.constants import AssetTypes
@@ -84,9 +89,35 @@ def fetch_month(ds: xr.Dataset, year: int, month: int, store) -> None:
     subset.to_zarr(store, mode="w")
 
 
-def fetch_static(ds: xr.Dataset, store) -> None:
+def shard_is_complete(fs, path: str) -> bool:
+    """Whether every data chunk of every weather variable in a monthly shard was written.
+
+    Existence of the shard says nothing: an interrupted write leaves the metadata in place, and
+    chunks that were never written read back as NaN. Such a shard must be fetched again.
+    """
+    for name in list(SURF_VAR_MAP.values()) + list(ATMOS_VAR_MAP.values()):
+        try:
+            meta = json.loads(fs.cat(f"{path}/{name}/.zarray"))
+        except FileNotFoundError:
+            return False
+        expected = math.prod(-(-size // chunk) for size, chunk in zip(meta["shape"], meta["chunks"]))
+        written = sum(
+            bool(re.fullmatch(r"\d+(\.\d+)*", entry.rsplit("/", 1)[-1]))
+            for entry in fs.ls(f"{path}/{name}", detail=False)
+        )
+        if written != expected:
+            return False
+    return True
+
+
+def fetch_static(ds: xr.Dataset, store, when: pd.Timestamp) -> None:
     variables = list(STATIC_VAR_MAP.values())
-    ds[variables].isel(time=0, drop=True).compute().to_zarr(store, mode="w")
+    # The archive starts in 1900 with empty slices, not at the start of valid ERA5 data.
+    static = ds[variables].sel(time=when, drop=True).compute()
+    for name in variables:
+        if not np.isfinite(static[name].values).all():
+            raise ValueError(f"Non-finite ERA5 static field {name} at {when}; refusing to write.")
+    static.to_zarr(store, mode="w")
 
 
 def main() -> None:
@@ -129,7 +160,7 @@ def main() -> None:
     missing = [
         (year, month)
         for year, month in months
-        if not fs.exists(f"{container}/{prefix}/{year}-{month:02d}.zarr")
+        if not shard_is_complete(fs, f"{container}/{prefix}/{year}-{month:02d}.zarr")
     ]
     static_path = f"{container}/{prefix}/static.zarr"
     need_static = not fs.exists(static_path)
@@ -141,7 +172,7 @@ def main() -> None:
 
         if need_static:
             logger.info(f"Writing static variables -> {static_path}")
-            fetch_static(ds, fs.get_mapper(static_path))
+            fetch_static(ds, fs.get_mapper(static_path), start)
 
         for year, month in missing:
             path = f"{container}/{prefix}/{year}-{month:02d}.zarr"

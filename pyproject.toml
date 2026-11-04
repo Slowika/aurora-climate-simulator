@@ -35,4 +35,5 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = "./"
+pythonpath = ["./", "data"]
+addopts = "--import-mode=importlib"
