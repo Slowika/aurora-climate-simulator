@@ -25,6 +25,7 @@ import torch.nn.functional as F
 import xarray as xr
 
 from aurora import Batch, Metadata
+from aurora.normalisation import normalise_atmos_var, normalise_surf_var
 from aurora_cs import AuroraCS, configure_mlflow_auth, save_checkpoint
 from aurora_cs.training_checkpoint import (
     check_writable,
@@ -74,6 +75,9 @@ MODEL_CONFIG = dict(
 )
 PATCH_SIZE = 4  # AuroraCS's default `patch_size`; history windows must be pre-cropped to it.
 SIX_HOURS = pd.Timedelta(hours=6)
+LOSS_KINDS = ("raw", "normalised")
+# Relative weight of the surface and atmospheric groups in the normalised loss.
+LOSS_GROUP_WEIGHTS = {"surf_vars": 1.0, "atmos_vars": 1.0}
 
 
 def open_month(era5_data: Path, cache: dict, year: int, month: int) -> xr.Dataset:
@@ -253,6 +257,54 @@ def step_loss(pred: Batch, target: dict) -> torch.Tensor:
     return loss
 
 
+def normalised_step_loss(pred: Batch, target: dict) -> torch.Tensor:
+    """Loss that treats every variable and pressure level equally, unlike the raw-unit MSE
+    (which is dominated by geopotential and pressure, and ignores humidity).
+
+    Errors are divided by Aurora's per-variable (and per-level) scales, squared, weighted by
+    cos(latitude) normalised to mean 1, and averaged. Surface and atmospheric variables are
+    averaged within their own group, then combined with `LOSS_GROUP_WEIGHTS`, so the 4 surface
+    variables are not swamped by the 65 variable-level terms.
+    """
+    lat = pred.metadata.lat
+    lat_weights = torch.cos(torch.deg2rad(lat))
+    lat_weights = (lat_weights / lat_weights.mean()).unsqueeze(-1)  # (H, 1)
+    levels = pred.metadata.atmos_levels
+    when = pred.metadata.time[0]
+
+    group_losses = {}
+    for group, predicted in (("surf_vars", pred.surf_vars), ("atmos_vars", pred.atmos_vars)):
+        terms = []
+        for name, truth in target[group].items():
+            context = f"{group}.{name} at {when}"
+            expected = truth.to(predicted[name])
+            require_finite(expected, f"target.{context}")
+            require_finite(predicted[name], f"prediction.{context}")
+            if group == "surf_vars":
+                diff = normalise_surf_var(predicted[name], name) - normalise_surf_var(expected, name)
+            else:
+                diff = normalise_atmos_var(predicted[name], name, levels) - normalise_atmos_var(
+                    expected, name, levels
+                )
+            term = (diff**2 * lat_weights.to(diff)).mean()
+            require_finite(term, f"loss.{context}")
+            terms.append(term)
+        group_losses[group] = torch.stack(terms).mean()
+
+    weights = LOSS_GROUP_WEIGHTS
+    loss = sum(weights[g] * group_losses[g] for g in group_losses) / sum(weights[g] for g in group_losses)
+    require_finite(loss, f"total loss at {when}")
+    return loss
+
+
+def compute_loss(pred: Batch, target: dict, kind: str = "raw") -> torch.Tensor:
+    if kind == "raw":
+        return step_loss(pred, target)
+    if kind == "normalised":
+        return normalised_step_loss(pred, target)
+    raise ValueError(f"Unknown loss '{kind}'; expected one of {LOSS_KINDS}.")
+
+
 def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
     """Log `model` (weights + `config`, see `save_checkpoint`) to the active run and register it."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -297,6 +349,7 @@ def train_loop(
     checkpoint_dir: str | None = None,
     checkpoint_every: int = 2000,
     fingerprint: dict | None = None,
+    loss_kind: str = "raw",
     samples_per_epoch: int | None = None,
     checkpoint_fs=None,
 ) -> None:
@@ -337,7 +390,7 @@ def train_loop(
             batch, forcing, target = get_example(cur_t)
             optimizer.zero_grad()
             pred = model(batch, forcing=forcing)
-            loss = step_loss(pred, target)
+            loss = compute_loss(pred, target, loss_kind)
             loss.backward()
             for name, param in model.named_parameters():
                 if param.grad is not None:
@@ -398,6 +451,13 @@ def main() -> None:
         default=None,
         help="Examples drawn uniformly at random (without replacement) for each epoch. "
         "Default ('all'): every example, shuffled.",
+    )
+    parser.add_argument(
+        "--loss",
+        choices=LOSS_KINDS,
+        default="raw",
+        help="'raw': MSE in physical units. 'normalised': per-variable/level scaled, "
+        "latitude-weighted, surface and atmosphere weighted equally.",
     )
     parser.add_argument(
         "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
@@ -471,6 +531,8 @@ def main() -> None:
         "first_example": str(examples[0]),
         "last_example": str(examples[-1]),
         "model_config": MODEL_CONFIG,
+        # Omitted for the original loss, so checkpoints made before `--loss` existed still resume.
+        **({"loss": args.loss} if args.loss != "raw" else {}),
         # Omitted when every example is used, so checkpoints made before `--samples-per-epoch`
         # existed still resume. Changing it changes which examples an epoch visits, so a
         # checkpoint's position would no longer mean the same.
@@ -486,6 +548,7 @@ def main() -> None:
         checkpoint_fs=checkpoint_fs,
         checkpoint_every=args.checkpoint_every,
         fingerprint=fingerprint,
+        loss_kind=args.loss,
         samples_per_epoch=args.samples_per_epoch,
     )
 
