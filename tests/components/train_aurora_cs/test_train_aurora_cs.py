@@ -443,3 +443,66 @@ def test_local_directories_still_work_without_a_filesystem(tmp_path):
     )
     state = ckpt.load_latest_training_state(tmp_path / "new" / "dir", torch.device("cpu"))
     assert state["global_step"] == 1
+
+
+def invoke_main_until_data_load(monkeypatch, *extra, write_check=None):
+    monkeypatch.setattr(
+        sys, "argv",
+        ["train_aurora_cs.py", "--era5-data", "era5", "--co2-data", "co2.csv", "--model-name", "m", *extra],
+    )
+    monkeypatch.setattr(training, "check_writable", write_check or Mock())
+    order = []
+    monkeypatch.setattr(training, "configure_mlflow_auth", lambda: order.append("auth"))
+    monkeypatch.setattr(training.torch.cuda, "is_available", lambda: order.append("device") or False)
+    monkeypatch.setattr(
+        training.pd, "read_csv", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("data loading started"))
+    )
+    with pytest.raises(RuntimeError, match="data loading started"):
+        training.main()
+    return order
+
+
+def test_main_checks_blob_access_before_any_data_is_loaded(monkeypatch):
+    fs = Mock()
+    monkeypatch.setattr(training, "open_checkpoint_store", lambda *a, **k: (fs, "cont/prefix"))
+    check = Mock()
+    invoke_main_until_data_load(monkeypatch, "--checkpoint-prefix", "prefix", write_check=check)
+    check.assert_called_once_with(fs, "cont/prefix")
+
+
+def test_main_stops_at_startup_when_blob_is_not_writable(monkeypatch):
+    monkeypatch.setattr(training, "open_checkpoint_store", lambda *a, **k: (Mock(), "cont/prefix"))
+    monkeypatch.setattr(sys, "argv", ["t", "--era5-data", "e", "--co2-data", "c", "--model-name", "m",
+                                      "--checkpoint-prefix", "p"])
+    monkeypatch.setattr(training, "configure_mlflow_auth", lambda: None)
+    monkeypatch.setattr(training, "check_writable", Mock(side_effect=PermissionError("denied")))
+    monkeypatch.setattr(training.pd, "read_csv", Mock(side_effect=AssertionError("data was loaded")))
+    with pytest.raises(PermissionError, match="denied"):
+        training.main()
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--checkpoint-prefix", "p"], "storage account"),
+        (["--checkpoint-prefix", "p", "--checkpoint-account", "a"], "storage container"),
+        (["--checkpoint-prefix", "checkpoints/<MODEL_NAME>", "--checkpoint-account", "a",
+          "--checkpoint-container", "c"], "unfilled placeholder"),
+        (["--checkpoint-dir", "/tmp/x", "--checkpoint-prefix", "p", "--checkpoint-account", "a",
+          "--checkpoint-container", "c"], "not both"),
+    ],
+)
+def test_main_reports_bad_checkpoint_settings_as_usage_errors(monkeypatch, capsys, args, message):
+    monkeypatch.setattr(
+        sys, "argv", ["t", "--era5-data", "e", "--co2-data", "c", "--model-name", "m", *args]
+    )
+    with pytest.raises(SystemExit) as exc:
+        training.main()
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_main_without_checkpointing_skips_the_write_check(monkeypatch):
+    check = Mock()
+    invoke_main_until_data_load(monkeypatch, write_check=check)
+    check.assert_not_called()
