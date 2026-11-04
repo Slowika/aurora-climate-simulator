@@ -1,13 +1,14 @@
-"""CLI producer: fetch ERA5 weather data from ARCO-ERA5 and register it as a monthly-sharded
-Azure ML data asset, written directly to the workspace's blob datastore, e.g.:
+"""CLI producer: fetch ERA5 data from the Google Cloud Platform analysis-ready dataset.
 
-    python fetch_era5.py --start-date 2020-01-01 --end-date 2020-03-01 \\
-        --prefix era5 --asset-name era5-weather \\
-        --subscription-id ... --resource-group ... --workspace-name ...
+Writes month-sharded data to an output folder.
 
-Re-running with an overlapping or extended date range only writes the months that are not already
-complete under `--prefix` (a month interrupted part-way is fetched again), then registers a new
-version of the asset over the (now larger) folder.
+    python fetch_era5.py --start-date 2020-01-01 --end-date 2020-03-01
+
+Re-running with overlapping or extended date ranges only writes the months not already
+present (a month interrupted part-way is fetched again).
+
+When run as an Azure ML command job with jobs/fetch_era5_job.yml, the output is
+auto-registered as an Azure ML data asset under a given name and version.
 """
 
 import argparse
@@ -16,14 +17,12 @@ import json
 import logging
 import math
 import re
+from pathlib import Path
 
 import gcsfs
 import numpy as np
 import pandas as pd
 import xarray as xr
-from azure.ai.ml.constants import AssetTypes
-
-from azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -50,33 +49,32 @@ STATIC_VAR_MAP = {
 }
 ATMOS_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
 
-DATA_TAG = {"data": "GCP ERA5 ARCO 6H"}
-
 
 def month_range(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[int, int]]:
-    """(year, month) pairs spanning [start, end], inclusive."""
+    """Generate (year, month) pairs spanning [start, end], inclusive."""
     months = []
     year, month = start.year, start.month
     while (year, month) <= (end.year, end.month):
         months.append((year, month))
         month += 1
-        if month > 12:
+        if month > 12:  # noqa: PLR2004
             month = 1
             year += 1
     return months
 
 
-def fetch_month(ds: xr.Dataset, year: int, month: int, store) -> None:
-    """Fetch one calendar month at Aurora's native 6-hourly cadence.
+def fetch_month(ds: xr.Dataset, year: int, month: int, store: Path) -> None:
+    """Fetch and write one calendar month at Aurora's native 6-hourly cadence.
 
     Every chunk in the source archive bundles all 37 pressure levels for a single hourly
-    timestep, so selecting `ATMOS_LEVELS` doesn't reduce what has to be read off GCS - only
-    subsampling in time does. Aurora itself only consumes 6-hourly steps, so this loses nothing.
+    timestep, so selecting `ATMOS_LEVELS` doesn't reduce what has to be read off GCS -
+    only subsampling in time does. Aurora itself only consumes 6-hourly steps, so this
+    loses nothing.
 
     A month of 5 atmospheric variables at 13 levels is ~30GB in float32 - too large to
     materialize at once on modest compute. `ds` must be dask-backed (chunked one native
-    timestep at a time, via `open_zarr(..., chunks={"time": 1})`) so `to_zarr` streams the
-    write one chunk at a time instead, keeping peak memory flat regardless of range.
+    timestep at a time, via `open_zarr(..., chunks={"time": 1})`) so `to_zarr` streams
+    the write one chunk at a time instead, keeping peak memory flat regardless of range.
     """
     _, last_day = calendar.monthrange(year, month)
     times = pd.date_range(
@@ -86,112 +84,98 @@ def fetch_month(ds: xr.Dataset, year: int, month: int, store) -> None:
     )
     variables = list(SURF_VAR_MAP.values()) + list(ATMOS_VAR_MAP.values())
     subset = ds[variables].sel(time=times, level=ATMOS_LEVELS)
-    subset.to_zarr(store, mode="w")
+    subset.to_zarr(store, mode="w")  # type: ignore[invalid-argument-type]
 
 
-def shard_is_complete(fs, path: str) -> bool:
-    """Whether every data chunk of every weather variable in a monthly shard was written.
+def shard_is_complete(store: Path) -> bool:
+    """Whether every chunk of every variable exists in a local Zarr shard.
 
-    Existence of the shard says nothing: an interrupted write leaves the metadata in place, and
-    chunks that were never written read back as NaN. Such a shard must be fetched again.
+    Existence of the shard says nothing: an interrupted write leaves the metadata in
+    place, and chunks that were never written read back as NaN. Such a shard must be
+    fetched again.
     """
     for name in list(SURF_VAR_MAP.values()) + list(ATMOS_VAR_MAP.values()):
+        variable_dir = store / name
         try:
-            meta = json.loads(fs.cat(f"{path}/{name}/.zarray"))
+            meta = json.loads((variable_dir / ".zarray").read_text())
+            entries = tuple(variable_dir.iterdir())
         except FileNotFoundError:
             return False
-        expected = math.prod(-(-size // chunk) for size, chunk in zip(meta["shape"], meta["chunks"]))
+
+        expected = math.prod(
+            -(-size // chunk)
+            for size, chunk in zip(meta["shape"], meta["chunks"], strict=True)
+        )
         written = sum(
-            bool(re.fullmatch(r"\d+(\.\d+)*", entry.rsplit("/", 1)[-1]))
-            for entry in fs.ls(f"{path}/{name}", detail=False)
+            entry.is_file()
+            and bool(re.fullmatch(r"\d+(\.\d+)*", entry.name))
+            for entry in entries
         )
         if written != expected:
             return False
     return True
 
 
-def fetch_static(ds: xr.Dataset, store, when: pd.Timestamp) -> None:
+def fetch_static(ds: xr.Dataset, when: pd.Timestamp, store: Path) -> None:
+    """Fetch and write static variables for a given timestamp."""
     variables = list(STATIC_VAR_MAP.values())
     # The archive starts in 1900 with empty slices, not at the start of valid ERA5 data.
     static = ds[variables].sel(time=when, drop=True).compute()
     for name in variables:
         if not np.isfinite(static[name].values).all():
-            raise ValueError(f"Non-finite ERA5 static field {name} at {when}; refusing to write.")
-    static.to_zarr(store, mode="w")
+            msg = f"Non-finite static variable, skipped write: var={name} time={when}"
+            raise ValueError(msg)
+    static.to_zarr(store, mode="w")  # type: ignore[invalid-argument-type]
 
 
 def main() -> None:
+    """Fetch ERA5 data for a given date range, storing Zarr format monthly shards."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--start-date", required=True)
-    parser.add_argument("--end-date", required=True)
-    parser.add_argument("--prefix", required=True, help="blob path prefix under the datastore")
-    parser.add_argument("--asset-name", required=True)
     parser.add_argument(
-        "--datastore-name",
-        default="workspaceblobstore",
-        help="Name of the workspace blob datastore to write into.",
+        "--start-date",
+        type=pd.Timestamp,
+        required=True,
+        help="Start date for fetching ERA5 data in YYYY-MM-DD format.",
     )
-    parser.add_argument("--subscription-id", required=True)
-    parser.add_argument("--resource-group", required=True)
-    parser.add_argument("--workspace-name", required=True)
     parser.add_argument(
-        "--managed-identity-client-id",
-        default=None,
-        help="Client ID of the compute's user-assigned identity; omit to use its "
-        "system-assigned identity.",
+        "--end-date",
+        type=pd.Timestamp,
+        required=True,
+        help="End date for fetching ERA5 data in YYYY-MM-DD format.",
+    )
+    parser.add_argument(
+        "--sharded",
+        type=Path,
+        required=True,
+        help="Directory to which fetched monthly shards will be written.",
     )
     args = parser.parse_args()
 
-    start = pd.Timestamp(args.start_date)
-    end = pd.Timestamp(args.end_date)
-    prefix = args.prefix.strip("/")
-
-    ml_client = get_ml_client(
-        args.subscription_id,
-        args.resource_group,
-        args.workspace_name,
-        args.managed_identity_client_id or None,
-    )
-    fs, container = get_blob_filesystem(
-        ml_client, args.datastore_name, args.managed_identity_client_id or None
-    )
-
-    months = month_range(start, end)
+    months = month_range(args.start_date, args.end_date)
     missing = [
         (year, month)
         for year, month in months
-        if not shard_is_complete(fs, f"{container}/{prefix}/{year}-{month:02d}.zarr")
+        if not shard_is_complete(args.sharded / f"{year}-{month:02d}.zarr")
     ]
-    static_path = f"{container}/{prefix}/static.zarr"
-    need_static = not fs.exists(static_path)
+    static_path = args.sharded / "static.zarr"
+    need_static = not static_path.exists()
 
     if missing or need_static:
-        logger.info(f"Opening {ZARR_URL}...")
-        gcs = gcsfs.GCSFileSystem(token="anon")
+        logger.info("Opening source store: url=%s", ZARR_URL)
+        gcs = gcsfs.GCSFileSystem(token="anon")  # noqa: S106
         ds = xr.open_zarr(gcs.get_mapper(ZARR_URL), chunks={"time": 1})
 
         if need_static:
-            logger.info(f"Writing static variables -> {static_path}")
-            fetch_static(ds, fs.get_mapper(static_path), start)
+            logger.info("Writing static variables: path=%s", static_path)
+            fetch_static(ds, args.start_date, static_path)
 
         for year, month in missing:
-            path = f"{container}/{prefix}/{year}-{month:02d}.zarr"
-            logger.info(f"  {year}-{month:02d} -> {path}")
-            fetch_month(ds, year, month, fs.get_mapper(path))
+            path = args.sharded / f"{year}-{month:02d}.zarr"
+            logger.info("Writing shard: year=%s month=%s path=%s", year, month, path)
+            fetch_month(ds, year, month, path)
     else:
         logger.info("All requested months (and statics) already present.")
 
-    asset_path = f"azureml://datastores/{args.datastore_name}/paths/{prefix}"
-    logger.info(f"Registering '{args.asset_name}' from {asset_path}...")
-    register_data_asset(
-        ml_client,
-        name=args.asset_name,
-        path=asset_path,
-        asset_type=AssetTypes.URI_FOLDER,
-        description=f"ERA5 weather data, monthly shards, {args.start_date} to {args.end_date}",
-        version=next_version(ml_client, args.asset_name),
-        tags=DATA_TAG,
-    )
     logger.info("Done.")
 
 

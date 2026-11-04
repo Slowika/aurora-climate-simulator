@@ -73,9 +73,11 @@ Set up your shell once (the commands below use these variables):
 az configure --defaults group=<resource-group> workspace=<workspace>
 CPU_COMPUTE=<cpu-cluster>
 GPU_COMPUTE=<gpu-cluster>
-# Workspace and identity inputs used by the data jobs:
+# Workspace and identity inputs used by some data jobs:
 WS="inputs.subscription_id=<subscription-id> inputs.resource_group=<resource-group> \
 inputs.workspace_name=<workspace> inputs.managed_identity_client_id=<identity-client-id>"
+# Storage parameters used by some data jobs:
+DATASTORE=<azureml-datastore-alias>
 ```
 
 Job names must be unique, so give every submission its own `--set name=...`.
@@ -94,9 +96,10 @@ chunks are missing.
 
 ```bash
 az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
-  --set compute=azureml:$CPU_COMPUTE --set $WS \
+  --set compute=azureml:$CPU_COMPUTE \
   --set inputs.start_date=2020-01-01 inputs.end_date=2020-01-31 \
-  --set inputs.prefix=era5 inputs.asset_name=era5-weather
+  --set outputs.sharded.path=azureml://datastores/$DATASTORE/paths/era5_shards/ \
+  --set outputs.sharded.name=era5-weather
 
 az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2020-01 \
   --set compute=azureml:$CPU_COMPUTE --set $WS \
