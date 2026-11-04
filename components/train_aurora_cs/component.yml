@@ -23,7 +23,7 @@ inputs:
     description: Number of passes over all one-step training examples.
   lr:
     type: number
-    default: 0.001
+    default: 0.0001
     description: Adam learning rate.
 code: .
 environment: azureml:aurora-cs-torch-env@latest
