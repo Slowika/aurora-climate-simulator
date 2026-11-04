@@ -113,8 +113,9 @@ ML.
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
 (1900-01-01, which contains missing data).
 Previously fetched assets may contain an all-NaN `static.zarr`: fixing the fetcher does not
-repair existing blobs, and rerunning it skips an existing static shard. Regenerate that shard
-from a valid timestamp before retraining; the monthly weather shards need not be refetched.
+repair existing blobs, and rerunning it skips an existing static shard.
+Regenerate that shard from a valid timestamp before retraining; the monthly weather shards need
+not be refetched.
 
 ```bash
 az ml job create -f jobs/train_aurora_cs_job.yml --set name=train-aurora-cs-2020-01-5ep \
