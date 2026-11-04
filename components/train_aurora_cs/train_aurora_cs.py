@@ -26,6 +26,12 @@ import xarray as xr
 
 from aurora import Batch, Metadata
 from aurora_cs import AuroraCS, configure_mlflow_auth, save_checkpoint
+from aurora_cs.training_checkpoint import (
+    load_latest_training_state,
+    open_checkpoint_store,
+    restore_training_state,
+    save_training_state,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -259,6 +265,75 @@ def parse_date(value: str) -> date | None:
     return None if value == "unbounded" else date.fromisoformat(value)
 
 
+def train_loop(
+    model: AuroraCS,
+    optimizer: torch.optim.Optimizer,
+    examples: list[pd.Timestamp],
+    get_example,
+    epochs: int,
+    *,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 2000,
+    fingerprint: dict | None = None,
+    checkpoint_fs=None,
+) -> None:
+    """Train for `epochs`, resuming from the newest checkpoint in `checkpoint_dir` if present.
+
+    Epoch `e` visits `examples` in an order seeded by `e`, so a resumed run sees exactly the
+    examples an uninterrupted one would. `get_example(cur_t)` returns `(batch, forcing, target)`.
+    """
+    fingerprint = fingerprint or {}
+    epoch_loss, position, global_step, start_epoch = 0.0, 0, 0, 0
+    if checkpoint_dir:
+        device = next(model.parameters()).device
+        state = load_latest_training_state(checkpoint_dir, device, checkpoint_fs)
+        if state:
+            restore_training_state(state, model, optimizer, fingerprint)
+            start_epoch, position = state["epoch"], state["position"]
+            global_step, epoch_loss = state["global_step"], state["epoch_loss"]
+            logger.info(f"Resumed at epoch {start_epoch}, example {position}, step {global_step}.")
+    last_saved = global_step if checkpoint_dir else None
+
+    def save(epoch: int, position: int) -> None:
+        nonlocal last_saved
+        save_training_state(
+            checkpoint_dir, model, optimizer, epoch=epoch, position=position,
+            global_step=global_step, epoch_loss=epoch_loss, fingerprint=fingerprint,
+            fs=checkpoint_fs,
+        )
+        last_saved = global_step
+
+    for epoch in range(start_epoch, epochs):
+        order = list(examples)
+        random.Random(epoch).shuffle(order)
+        for i in range(position, len(order)):
+            cur_t = order[i]
+            batch, forcing, target = get_example(cur_t)
+            optimizer.zero_grad()
+            pred = model(batch, forcing=forcing)
+            loss = step_loss(pred, target)
+            loss.backward()
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    require_finite(
+                        param.grad,
+                        f"gradient.{name}, epoch={epoch}, step={global_step}, "
+                        f"target time={cur_t + SIX_HOURS}",
+                    )
+            optimizer.step()
+            mlflow.log_metric("loss", loss.item(), step=global_step)
+            epoch_loss += loss.item()
+            global_step += 1
+            if checkpoint_dir and global_step % checkpoint_every == 0:
+                save(epoch, i + 1)
+        if checkpoint_dir and last_saved != global_step:
+            save(epoch, len(order))
+        mean_loss = epoch_loss / len(order)
+        mlflow.log_metric("epoch_loss", mean_loss, step=epoch)
+        logger.info(f"  epoch {epoch}: mean loss = {mean_loss:.6f}")
+        epoch_loss, position = 0.0, 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--era5-data", required=True)
@@ -266,6 +341,11 @@ def main() -> None:
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--checkpoint-dir",
+        help="Folder for resumable checkpoints; training resumes from the newest one found there.",
+    )
+    parser.add_argument("--checkpoint-every", type=int, default=2000, help="Steps between checkpoints.")
     parser.add_argument(
         "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
     )
@@ -275,6 +355,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.start_date is not None and args.end_date is not None and args.start_date > args.end_date:
         parser.error("--start-date must be on or before --end-date")
+    checkpoint_fs, checkpoint_path = open_checkpoint_store(args.checkpoint_dir)
 
     configure_mlflow_auth()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -314,31 +395,25 @@ def main() -> None:
     optimizer = torch.optim.Adam(trainable_params, lr=args.lr)
 
     logger.info(f"Training for {args.epochs} epoch(s) over {len(examples)} example(s)...")
-    rng = random.Random(0)
-    global_step = 0
-    for epoch in range(args.epochs):
-        rng.shuffle(examples)
-        epoch_loss = 0.0
-        for cur_t in examples:
-            batch, forcing, target = load_example(era5_data, cache, static, co2, cur_t, device)
-            optimizer.zero_grad()
-            pred = model(batch, forcing=forcing)
-            loss = step_loss(pred, target)
-            loss.backward()
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    require_finite(
-                        param.grad,
-                        f"gradient.{name}, epoch={epoch}, step={global_step}, "
-                        f"target time={cur_t + SIX_HOURS}",
-                    )
-            optimizer.step()
-            mlflow.log_metric("loss", loss.item(), step=global_step)
-            epoch_loss += loss.item()
-            global_step += 1
-        mean_loss = epoch_loss / len(examples)
-        mlflow.log_metric("epoch_loss", mean_loss, step=epoch)
-        logger.info(f"  epoch {epoch}: mean loss = {mean_loss:.6f}")
+    # `epochs` is deliberately excluded so a finished run's checkpoint can be extended.
+    fingerprint = {
+        "lr": args.lr,
+        "num_examples": len(examples),
+        "first_example": str(examples[0]),
+        "last_example": str(examples[-1]),
+        "model_config": MODEL_CONFIG,
+    }
+    train_loop(
+        model,
+        optimizer,
+        examples,
+        lambda cur_t: load_example(era5_data, cache, static, co2, cur_t, device),
+        args.epochs,
+        checkpoint_dir=checkpoint_path,
+        checkpoint_fs=checkpoint_fs,
+        checkpoint_every=args.checkpoint_every,
+        fingerprint=fingerprint,
+    )
 
     logger.info(f"Registering trained model as '{args.model_name}'...")
     register_model(model, MODEL_CONFIG, args.model_name)
