@@ -19,7 +19,7 @@ import torch
 from azure.ai.ml.constants import AssetTypes
 from tqdm import tqdm
 
-from aurora_cs import load_checkpoint
+from aurora_cs import configure_mlflow_auth, load_checkpoint
 from data.azure_ml import get_blob_filesystem, get_ml_client, next_version, register_data_asset
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -65,6 +65,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    configure_mlflow_auth()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
