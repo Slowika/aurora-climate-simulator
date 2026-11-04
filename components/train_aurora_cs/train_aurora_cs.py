@@ -266,6 +266,27 @@ def parse_date(value: str) -> date | None:
     return None if value == "unbounded" else date.fromisoformat(value)
 
 
+def epoch_order(
+    examples: list[pd.Timestamp], epoch: int, samples_per_epoch: int | None = None
+) -> list[pd.Timestamp]:
+    """The examples visited in `epoch`, in order. Seeded by `epoch` alone, so a resumed run
+    visits exactly what an uninterrupted one would.
+
+    By default that is every example, shuffled. With `samples_per_epoch`, it is that many
+    examples drawn uniformly at random without replacement, freshly for each epoch.
+    """
+    rng = random.Random(epoch)
+    if samples_per_epoch is None:
+        order = list(examples)
+        rng.shuffle(order)
+        return order
+    if samples_per_epoch > len(examples):
+        raise ValueError(
+            f"samples_per_epoch={samples_per_epoch} exceeds the {len(examples)} available examples."
+        )
+    return rng.sample(examples, samples_per_epoch)
+
+
 def train_loop(
     model: AuroraCS,
     optimizer: torch.optim.Optimizer,
@@ -276,13 +297,18 @@ def train_loop(
     checkpoint_dir: str | None = None,
     checkpoint_every: int = 2000,
     fingerprint: dict | None = None,
+    samples_per_epoch: int | None = None,
     checkpoint_fs=None,
 ) -> None:
     """Train for `epochs`, resuming from the newest checkpoint in `checkpoint_dir` if present.
 
-    Epoch `e` visits `examples` in an order seeded by `e`, so a resumed run sees exactly the
-    examples an uninterrupted one would. `get_example(cur_t)` returns `(batch, forcing, target)`.
+    Each epoch visits the examples chosen by `epoch_order`. `get_example(cur_t)` returns
+    `(batch, forcing, target)`.
     """
+    if samples_per_epoch is not None and samples_per_epoch > len(examples):
+        raise ValueError(
+            f"samples_per_epoch={samples_per_epoch} exceeds the {len(examples)} available examples."
+        )
     fingerprint = fingerprint or {}
     epoch_loss, position, global_step, start_epoch = 0.0, 0, 0, 0
     if checkpoint_dir:
@@ -305,8 +331,7 @@ def train_loop(
         last_saved = global_step
 
     for epoch in range(start_epoch, epochs):
-        order = list(examples)
-        random.Random(epoch).shuffle(order)
+        order = epoch_order(examples, epoch, samples_per_epoch)
         for i in range(position, len(order)):
             cur_t = order[i]
             batch, forcing, target = get_example(cur_t)
@@ -335,6 +360,19 @@ def train_loop(
         epoch_loss, position = 0.0, 0
 
 
+def parse_samples_per_epoch(value: str) -> int | None:
+    """A positive integer, or the command job template's explicit "all" default."""
+    if value == "all":
+        return None
+    try:
+        count = int(value)
+    except ValueError:
+        count = 0
+    if count < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer or 'all', got '{value}'")
+    return count
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--era5-data", required=True)
@@ -354,6 +392,13 @@ def main() -> None:
     parser.add_argument("--checkpoint-account", help="Storage account holding the checkpoints.")
     parser.add_argument("--checkpoint-container", help="Blob container holding the checkpoints.")
     parser.add_argument("--checkpoint-every", type=int, default=2000, help="Steps between checkpoints.")
+    parser.add_argument(
+        "--samples-per-epoch",
+        type=parse_samples_per_epoch,
+        default=None,
+        help="Examples drawn uniformly at random (without replacement) for each epoch. "
+        "Default ('all'): every example, shuffled.",
+    )
     parser.add_argument(
         "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
     )
@@ -414,7 +459,11 @@ def main() -> None:
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable_params, lr=args.lr)
 
-    logger.info(f"Training for {args.epochs} epoch(s) over {len(examples)} example(s)...")
+    per_epoch = args.samples_per_epoch or len(examples)
+    logger.info(
+        f"Training for {args.epochs} epoch(s) of {per_epoch} example(s) each, "
+        f"from {len(examples)} available..."
+    )
     # `epochs` is deliberately excluded so a finished run's checkpoint can be extended.
     fingerprint = {
         "lr": args.lr,
@@ -422,6 +471,10 @@ def main() -> None:
         "first_example": str(examples[0]),
         "last_example": str(examples[-1]),
         "model_config": MODEL_CONFIG,
+        # Omitted when every example is used, so checkpoints made before `--samples-per-epoch`
+        # existed still resume. Changing it changes which examples an epoch visits, so a
+        # checkpoint's position would no longer mean the same.
+        **({"samples_per_epoch": args.samples_per_epoch} if args.samples_per_epoch else {}),
     }
     train_loop(
         model,
@@ -433,6 +486,7 @@ def main() -> None:
         checkpoint_fs=checkpoint_fs,
         checkpoint_every=args.checkpoint_every,
         fingerprint=fingerprint,
+        samples_per_epoch=args.samples_per_epoch,
     )
 
     logger.info(f"Registering trained model as '{args.model_name}'...")
