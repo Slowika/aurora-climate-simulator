@@ -73,10 +73,7 @@ Set up your shell once (the commands below use these variables):
 az configure --defaults group=<resource-group> workspace=<workspace>
 CPU_COMPUTE=<cpu-cluster>
 GPU_COMPUTE=<gpu-cluster>
-# Workspace and identity inputs used by some data jobs:
-WS="inputs.subscription_id=<subscription-id> inputs.resource_group=<resource-group> \
-inputs.workspace_name=<workspace> inputs.managed_identity_client_id=<identity-client-id>"
-# Storage parameters used by some data jobs:
+# Storage parameters used by data jobs:
 DATASTORE=<azureml-datastore-alias>
 ```
 
@@ -88,11 +85,16 @@ The examples encode the key parameters in the name; change them when you change 
 `jobs/fetch_era5_job.yml` fetches ERA5 initial conditions, and `jobs/fetch_co2_forcing_job.yml`
 fetches the CO2 series for an SSP scenario (`ssp126`, `ssp245`, `ssp370` or `ssp585`; coverage
 starts 2015-01).
-Both register an Azure ML data asset.
-Run each once for a given date range, unless you are adding a disjoint range.
+Each automatically registers an Azure ML data asset from its sole output.
+The asset version can be set in the job YAML definition or omitted, in which case Azure ML
+auto-increments from "1".
+`fetch_era5` can reuse a stable sharded output path and fetch only missing months when extending
+the requested range.
 A month interrupted part-way (for example by a failed job) is detected and fetched again on the
 next run, because a partly written shard still has its metadata but reads back as NaN where
 chunks are missing.
+`fetch_co2_forcing` produces one CSV for the selected scenario and requested inclusive month range;
+use a distinct output path/asset version for a different range or scenario.
 
 ```bash
 az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
@@ -102,9 +104,11 @@ az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
   --set outputs.sharded.name=era5-weather
 
 az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2020-01 \
-  --set compute=azureml:$CPU_COMPUTE --set $WS \
+  --set compute=azureml:$CPU_COMPUTE \
   --set inputs.start_date=2020-01-01 inputs.end_date=2020-02-01 \
-  --set inputs.scenario=ssp245 inputs.output_path=co2.csv inputs.asset_name=co2-forcing
+  --set inputs.scenario=ssp245 \
+  --set outputs.output.path=azureml://datastores/$DATASTORE/paths/co2.csv \
+  --set outputs.output.name=co2-forcing
 ```
 
 ### 2. Train
