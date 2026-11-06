@@ -1,4 +1,4 @@
-"""Shared Azure ML plumbing reused by every data-producer script."""
+"""Shared Azure ML plumbing used by some data-producer scripts."""
 
 from typing import Optional
 
