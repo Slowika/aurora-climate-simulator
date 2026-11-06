@@ -1,6 +1,6 @@
 """CLI producer: fetch ERA5 data from the Google Cloud Platform analysis-ready dataset.
 
-Writes month-sharded data to an output folder.
+Writes Zarr-formatted month-sharded data stores to an output folder.
 
     python fetch_era5.py --start-date 2020-01-01 --end-date 2020-03-01 \
         --sharded ~/data/era5_shards/
@@ -9,7 +9,7 @@ Re-running with overlapping or extended date ranges only writes the months not a
 present (a month interrupted part-way is fetched again).
 
 When run as an Azure ML command job with jobs/fetch_era5_job.yml, the output is
-auto-registered as an Azure ML data asset under a given name and version.
+auto-registered as an Azure ML data asset under a given name and optional version.
 """
 
 import argparse
@@ -193,19 +193,25 @@ def main() -> None:
         "--start-date",
         type=pd.Timestamp,
         required=True,
-        help="Start date for fetching ERA5 data in YYYY-MM-DD format.",
+        help=(
+            "Inclusive start date for fetching ERA5 data in YYYY-MM-DD format. "
+            "Dates part way through a month will fetch the entire month's data."
+        ),
     )
     parser.add_argument(
         "--end-date",
         type=pd.Timestamp,
         required=True,
-        help="End date for fetching ERA5 data in YYYY-MM-DD format.",
+        help=(
+            "Inclusive end date for fetching ERA5 data in YYYY-MM-DD format. "
+            "Dates part way through a month will fetch the entire month's data."
+        ),
     )
     parser.add_argument(
         "--sharded",
         type=Path,
         required=True,
-        help="Directory to which fetched monthly shards will be written.",
+        help="Directory to which fetched monthly shard Zarr stores will be written.",
     )
     args = parser.parse_args()
 
