@@ -1,0 +1,171 @@
+{
+    "responseHeader": {
+        "status": 0,
+        "QTime": 4,
+        "params": {
+            "df": "text",
+            "q.alt": "*:*",
+            "indent": "true",
+            "echoParams": "all",
+            "fl": "*,score",
+            "start": "0",
+            "fq": [
+                "type:File",
+                "project:\"input4MIPs\"",
+                "source_id:\"UoM-MESSAGE-GLOBIOM-ssp245-1-2-1\"",
+                "variable_id:\"mole_fraction_of_carbon_dioxide_in_air\"",
+                "grid_label:\"gr1-GMNHSH\"",
+                "frequency:\"mon\""
+            ],
+            "sort": "id asc",
+            "rows": "1",
+            "q": "*:*",
+            "shards": "solr-slave:8983/solr/files,solr-replica-ipsl:8983/solr/files,solr-replica-ceda:8983/solr/files,solr-replica-nci:8983/solr/files,solr-replica-gfdl:8983/solr/files",
+            "tie": "0.01",
+            "facet.limit": "-1",
+            "qf": "text",
+            "facet.method": "enum",
+            "facet.mincount": "1",
+            "wt": "json",
+            "facet": "true",
+            "facet.sort": "lex"
+        }
+    },
+    "response": {
+        "numFound": 1,
+        "start": 0,
+        "maxScore": 1.0,
+        "docs": [
+            {
+                "project": [
+                    "input4MIPs"
+                ],
+                "activity_id": [
+                    "input4MIPs"
+                ],
+                "mip_era": [
+                    "CMIP6"
+                ],
+                "target_mip": [
+                    "ScenarioMIP"
+                ],
+                "institution_id": [
+                    "UoM"
+                ],
+                "source_id": [
+                    "UoM-MESSAGE-GLOBIOM-ssp245-1-2-1"
+                ],
+                "realm": [
+                    "atmos"
+                ],
+                "frequency": [
+                    "mon"
+                ],
+                "variable_id": [
+                    "mole_fraction_of_carbon_dioxide_in_air"
+                ],
+                "grid_label": [
+                    "gr1-GMNHSH"
+                ],
+                "contact": [
+                    "malte.meinshausen@unimelb.edu.au"
+                ],
+                "dataset_category": [
+                    "GHGConcentrations"
+                ],
+                "source_version": [
+                    "1.2.1"
+                ],
+                "source": [
+                    "UoM-MESSAGE-GLOBIOM-ssp245-1-2-1: GHG mole fractions from (historical) NOAA & AGAGE networks and many others contributors (see references in Meinshausen et al.). Future GHG concentrations modelled with MAGICC7.0."
+                ],
+                "further_info_url": [
+                    "http://climatecollege.unimelb.edu.au/cmip6"
+                ],
+                "title": "mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc",
+                "product": [
+                    "assimilated observations; forward projections produced with MAGICC7.0; see www.magicc.org"
+                ],
+                "nominal_resolution": [
+                    "10000 km"
+                ],
+                "deprecated": [
+                    "10000 km"
+                ],
+                "dataset_status": [
+                    "10000 km"
+                ],
+                "Conventions": [
+                    "CF-1.6"
+                ],
+                "target_mip_list": [
+                    "CF-1.6"
+                ],
+                "creation_date": "2018-11-01T23:48:47Z",
+                "data_node": "esgf.ceda.ac.uk",
+                "index_node": "esgf.ceda.ac.uk",
+                "master_id": "input4MIPs.CMIP6.ScenarioMIP.UoM.UoM-MESSAGE-GLOBIOM-ssp245-1-2-1.atmos.mon.mole_fraction_of_carbon_dioxide_in_air.gr1-GMNHSH.mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc",
+                "instance_id": "input4MIPs.CMIP6.ScenarioMIP.UoM.UoM-MESSAGE-GLOBIOM-ssp245-1-2-1.atmos.mon.mole_fraction_of_carbon_dioxide_in_air.gr1-GMNHSH.v20181127.mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc",
+                "id": "input4MIPs.CMIP6.ScenarioMIP.UoM.UoM-MESSAGE-GLOBIOM-ssp245-1-2-1.atmos.mon.mole_fraction_of_carbon_dioxide_in_air.gr1-GMNHSH.v20181127.mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc|esgf.ceda.ac.uk",
+                "short_description": [
+                    "UoM-MESSAGE-GLOBIOM-ssp245-1-2-1: MESSAGE-GLOBIOM-ssp245 GHG concentrations: global and hemispheric means of CO2 prepared for input4MIPs"
+                ],
+                "replica": true,
+                "latest": true,
+                "type": "File",
+                "version": "20181127",
+                "dataset_id_template_": [
+                    "%(activity_id)s.%(mip_era)s.%(target_mip)s.%(institution_id)s.%(source_id)s.%(realm)s.%(frequency)s.%(variable_id)s.%(grid_label)s"
+                ],
+                "directory_format_template_": [
+                    "%(root)s/%(activity_id)s/%(mip_era)s/%(target_mip)s/%(institution_id)s/%(source_id)s/%(realm)s/%(frequency)s/%(variable_id)s/%(grid_label)s/%(version)s"
+                ],
+                "variable_long_name": [
+                    "mole"
+                ],
+                "variable_units": [
+                    "1.e-6"
+                ],
+                "variable": [
+                    "mole_fraction_of_carbon_dioxide_in_air"
+                ],
+                "dataset_id": "input4MIPs.CMIP6.ScenarioMIP.UoM.UoM-MESSAGE-GLOBIOM-ssp245-1-2-1.atmos.mon.mole_fraction_of_carbon_dioxide_in_air.gr1-GMNHSH.v20181127|esgf.ceda.ac.uk",
+                "tracking_id": [
+                    "hdl:21.14100/fe450fe9-bb02-45d2-8ab2-f97a83047827"
+                ],
+                "size": 299306,
+                "timestamp": "2025-03-27T18:32:35Z",
+                "checksum": [
+                    "4732a2f73b7bceac1fd5d44f1e2cce6457c1767b0e3a563c06d5b2709c864baa"
+                ],
+                "checksum_type": [
+                    "SHA256"
+                ],
+                "url": [
+                    "https://esgf.ceda.ac.uk/thredds/fileServer/esg_cmip6/input4MIPs/CMIP6/ScenarioMIP/UoM/UoM-MESSAGE-GLOBIOM-ssp245-1-2-1/atmos/mon/mole-fraction-of-carbon-dioxide-in-air/gr1-GMNHSH/v20181127/mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc|application/netcdf|HTTPServer",
+                    "https://esgf.ceda.ac.uk/thredds/dodsC/esg_cmip6/input4MIPs/CMIP6/ScenarioMIP/UoM/UoM-MESSAGE-GLOBIOM-ssp245-1-2-1/atmos/mon/mole-fraction-of-carbon-dioxide-in-air/gr1-GMNHSH/v20181127/mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc|application/opendap-html|OPENDAP"
+                ],
+                "publish_path": [
+                    "esg_cmip6/input4MIPs/CMIP6/ScenarioMIP/UoM/UoM-MESSAGE-GLOBIOM-ssp245-1-2-1/atmos/mon/mole-fraction-of-carbon-dioxide-in-air/gr1-GMNHSH/v20181127/mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc"
+                ],
+                "pid": [
+                    "hdl:21.14100/af3503e4-a493-3059-a586-ac3195b9b98d"
+                ],
+                "citation_url": [
+                    "http://cera-www.dkrz.de/WDCC/meta/CMIP6/input4MIPs.CMIP6.ScenarioMIP.UoM.UoM-MESSAGE-GLOBIOM-ssp245-1-2-1.atmos.mon.mole_fraction_of_carbon_dioxide_in_air.gr1-GMNHSH.mole-fraction-of-carbon-dioxide-in-air_input4MIPs_GHGConcentrations_ScenarioMIP_UoM-MESSAGE-GLOBIOM-ssp245-1-2-1_gr1-GMNHSH_201501-250012.nc.v20181127.json"
+                ],
+                "_version_": 1827872594572869632,
+                "retracted": false,
+                "_timestamp": "2025-03-28T20:52:27.107Z",
+                "score": 1.0
+            }
+        ]
+    },
+    "facet_counts": {
+        "facet_queries": {},
+        "facet_fields": {},
+        "facet_ranges": {},
+        "facet_intervals": {},
+        "facet_heatmaps": {}
+    }
+}

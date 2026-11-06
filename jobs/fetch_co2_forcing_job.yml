@@ -13,44 +13,34 @@
 # for registration), with the inputs below forwarded as CLI args.
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 
-code: ../data
+display_name: fetch_co2_forcing
 
+code: ../data
+environment: azureml:aurora-cs-data-env@latest
 command: >-
   python fetch_co2_forcing.py
   --start-date ${{inputs.start_date}}
   --end-date ${{inputs.end_date}}
   --scenario ${{inputs.scenario}}
-  --output-path ${{inputs.output_path}}
-  --asset-name ${{inputs.asset_name}}
-  --subscription-id ${{inputs.subscription_id}}
-  --resource-group ${{inputs.resource_group}}
-  --workspace-name ${{inputs.workspace_name}}
-  --managed-identity-client-id ${{inputs.managed_identity_client_id}}
-
-environment: azureml:aurora-cs-data-env@latest
-
-# The scripts authenticate to the workspace and its blob datastore as the compute's managed
-# identity; without this the job runs with no identity at all.
-identity:
-  type: managed
-
-compute: azureml:<COMPUTE_NAME>
-
-display_name: fetch_co2_forcing
-
-# A single small file download - much lighter than fetch_era5.
-limits:
-  timeout: 1800
+  --output ${{outputs.output}}
 
 inputs:
   start_date: <START_DATE>
   end_date: <END_DATE>
   scenario: <SCENARIO>
-  output_path: <OUTPUT_PATH>
-  asset_name: <ASSET_NAME>
-  subscription_id: <SUBSCRIPTION_ID>
-  resource_group: <RESOURCE_GROUP>
-  workspace_name: <WORKSPACE_NAME>
-  # Client ID of the compute's user-assigned identity. For a system-assigned identity, delete
-  # this input and the --managed-identity-client-id flag above (empty inputs are rejected).
-  managed_identity_client_id: <MANAGED_IDENTITY_CLIENT_ID>
+
+outputs:
+  output:
+    type: uri_file
+    path: <OUTPUT_PATH>
+    name: <AZUREML_DATA_ASSET_NAME>
+    # version optional, Azure ML auto-increments from 1 if absent
+    # version: <AZUREML_DATA_ASSET_VERSION>
+
+compute: azureml:<COMPUTE_NAME>
+# Azure ML uses the compute's managed identity to access the mounted output.
+identity:
+  type: managed
+# A single small file download - much lighter than fetch_era5.
+limits:
+  timeout: 1800
