@@ -2,7 +2,8 @@
 
 Writes month-sharded data to an output folder.
 
-    python fetch_era5.py --start-date 2020-01-01 --end-date 2020-03-01
+    python fetch_era5.py --start-date 2020-01-01 --end-date 2020-03-01 \
+        --sharded ~/data/era5_shards/
 
 Re-running with overlapping or extended date ranges only writes the months not already
 present (a month interrupted part-way is fetched again).
@@ -35,6 +36,7 @@ SURF_VAR_MAP = {
     "10v": "10m_v_component_of_wind",
     "msl": "mean_sea_level_pressure",
 }
+"""Mapping of Aurora short names to ERA5 long names for single-level variables."""
 ATMOS_VAR_MAP = {
     "t": "temperature",
     "u": "u_component_of_wind",
@@ -42,16 +44,33 @@ ATMOS_VAR_MAP = {
     "q": "specific_humidity",
     "z": "geopotential",
 }
+"""Mapping of Aurora short names to ERA5 long names for pressure-level variables."""
 STATIC_VAR_MAP = {
     "lsm": "land_sea_mask",
     "slt": "soil_type",
     "z": "geopotential_at_surface",
 }
+"""Mapping of Aurora short names to ERA5 long names for static variables."""
 ATMOS_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
+"""Pressure levels expected by the Aurora Pretrained model."""
 
 
 def month_range(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[int, int]]:
-    """Generate (year, month) pairs spanning [start, end], inclusive."""
+    """Generate a list of (year, month) pairs spanning a date range.
+
+    Parameters
+    ----------
+    start : pd.Timestamp
+        Inclusive start of the date range.
+    end : pd.Timestamp
+        Inclusive end of the date range.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        List of (year, month) pairs spanning the range.
+
+    """
     months = []
     year, month = start.year, start.month
     while (year, month) <= (end.year, end.month):
@@ -75,6 +94,18 @@ def fetch_month(ds: xr.Dataset, year: int, month: int, store: Path) -> None:
     materialize at once on modest compute. `ds` must be dask-backed (chunked one native
     timestep at a time, via `open_zarr(..., chunks={"time": 1})`) so `to_zarr` streams
     the write one chunk at a time instead, keeping peak memory flat regardless of range.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Source ERA5 dataset.
+    year : int
+        Year of the month to fetch.
+    month : int
+        Month to fetch.
+    store : Path
+        Local path to which the month's data will be written in Zarr format.
+
     """
     _, last_day = calendar.monthrange(year, month)
     times = pd.date_range(
@@ -93,6 +124,17 @@ def shard_is_complete(store: Path) -> bool:
     Existence of the shard says nothing: an interrupted write leaves the metadata in
     place, and chunks that were never written read back as NaN. Such a shard must be
     fetched again.
+
+    Parameters
+    ----------
+    store : Path
+        Local path to the Zarr shard to check for completeness.
+
+    Returns
+    -------
+    bool
+        True if every chunk of every variable exists, False otherwise.
+
     """
     for name in list(SURF_VAR_MAP.values()) + list(ATMOS_VAR_MAP.values()):
         variable_dir = store / name
@@ -117,7 +159,23 @@ def shard_is_complete(store: Path) -> bool:
 
 
 def fetch_static(ds: xr.Dataset, when: pd.Timestamp, store: Path) -> None:
-    """Fetch and write static variables for a given timestamp."""
+    """Fetch and write static variables for a given timestamp.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Source ERA5 dataset.
+    when : pd.Timestamp
+        Timestamp for which to fetch static variables.
+    store : Path
+        Local path to which the static variables will be written in Zarr format.
+
+    Raises
+    ------
+    ValueError
+        If any static variable contains non-finite values at the given timestamp.
+
+    """
     variables = list(STATIC_VAR_MAP.values())
     # The archive starts in 1900 with empty slices, not at the start of valid ERA5 data.
     static = ds[variables].sel(time=when, drop=True).compute()
@@ -152,15 +210,17 @@ def main() -> None:
     args = parser.parse_args()
 
     months = month_range(args.start_date, args.end_date)
-    missing = [
-        (year, month)
-        for year, month in months
-        if not shard_is_complete(args.sharded / f"{year}-{month:02d}.zarr")
+    shard_paths = [args.sharded / f"{year}-{month:02d}.zarr" for year, month in months]
+    missing_shards = [
+        (year, month, path)
+        for (year, month), path in zip(months, shard_paths, strict=True)
+        if not shard_is_complete(path)
     ]
+
     static_path = args.sharded / "static.zarr"
     need_static = not static_path.exists()
 
-    if missing or need_static:
+    if missing_shards or need_static:
         logger.info("Opening source store: url=%s", ZARR_URL)
         gcs = gcsfs.GCSFileSystem(token="anon")  # noqa: S106
         ds = xr.open_zarr(gcs.get_mapper(ZARR_URL), chunks={"time": 1})
@@ -169,8 +229,7 @@ def main() -> None:
             logger.info("Writing static variables: path=%s", static_path)
             fetch_static(ds, args.start_date, static_path)
 
-        for year, month in missing:
-            path = args.sharded / f"{year}-{month:02d}.zarr"
+        for year, month, path in missing_shards:
             logger.info("Writing shard: year=%s month=%s path=%s", year, month, path)
             fetch_month(ds, year, month, path)
     else:
