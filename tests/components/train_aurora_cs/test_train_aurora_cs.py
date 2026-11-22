@@ -8,6 +8,7 @@ import torch
 import xarray as xr
 from aurora import Batch, Metadata
 
+import training_data
 from components.train_aurora_cs import train_aurora_cs as training
 
 
@@ -65,13 +66,14 @@ def test_load_example_rejects_nonfinite_data(monkeypatch, prediction, target, tm
     if bad_source == "input":
         with torch.no_grad():
             prediction.atmos_vars["t"].fill_(float("nan"))
-    monkeypatch.setattr(training, "build_batch", lambda *args: prediction)
-    monkeypatch.setattr(training, "load_target", lambda *args: target)
+    monkeypatch.setattr(training_data, "build_batch", lambda *args: prediction)
+    monkeypatch.setattr(training_data, "load_target", lambda *args: target)
     monkeypatch.setattr(
-        training, "co2_ppm_for", lambda *args: float("nan") if bad_source == "forcing" else 350.0
+        training_data, "co2_ppm_for",
+        lambda *args: float("nan") if bad_source == "forcing" else 350.0,
     )
     with pytest.raises(FloatingPointError, match="input.atmos_vars.t|CO2 forcing"):
-        training.load_example(
+        training_data.load_example(
             tmp_path, {}, xr.Dataset(), pd.DataFrame(), pd.Timestamp("1990-01-01 06:00"),
             torch.device("cpu"),
         )
@@ -185,8 +187,8 @@ def test_discover_examples_respects_inclusive_dates(era5_times, start_date, end_
 
 def test_date_filter_preserves_gap_detection(tmp_path, monkeypatch):
     times = pd.date_range("1995-01-01", periods=8, freq="6h").delete(3)
-    monkeypatch.setattr(training, "discover_times", lambda *_: list(times))
-    assert training.discover_examples(
+    monkeypatch.setattr(training_data, "discover_times", lambda *_: list(times))
+    assert training_data.discover_examples(
         tmp_path, {}, date(1995, 1, 1), date(1995, 1, 2)
     ) == [times[1], times[4], times[5]]
 
