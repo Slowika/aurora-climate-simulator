@@ -43,6 +43,9 @@ inputs:
   # to preserve training on the full ERA5 asset when no date restriction is wanted.
   start_date: unbounded
   end_date: unbounded
+  # Training loss: `raw` (MSE in physical units) or `normalised` (per-variable scaled,
+  # latitude-weighted). Use a separate model name and checkpoint prefix for each loss.
+  loss: raw
   # (OPTIONAL) Train on this many randomly drawn examples per epoch instead of all of them.
   # Uncomment here and under `jobs.train_aurora_cs.inputs` below; leave out to use every example.
   # samples_per_epoch: 100
@@ -59,6 +62,7 @@ jobs:
       lr: ${{inputs.lr}}
       start_date: ${{inputs.start_date}}
       end_date: ${{inputs.end_date}}
+      loss: ${{inputs.loss}}
       # samples_per_epoch: ${{inputs.samples_per_epoch}}
       checkpoint_prefix: ${{inputs.checkpoint_prefix}}
       checkpoint_account: ${{inputs.checkpoint_account}}
