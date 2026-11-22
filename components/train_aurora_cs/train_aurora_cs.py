@@ -145,16 +145,14 @@ def train_loop(
         epoch_loss, position = 0.0, 0
 
 
-def parse_samples_per_epoch(value: str) -> int | None:
-    """A positive integer, or the command job template's explicit "all" default."""
-    if value == "all":
-        return None
+def parse_samples_per_epoch(value: str) -> int:
+    """Validate the number of samples per epoch is a positive integer."""
     try:
         count = int(value)
     except ValueError:
         count = 0
     if count < 1:
-        raise argparse.ArgumentTypeError(f"expected a positive integer or 'all', got '{value}'")
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got '{value}'")
     return count
 
 
@@ -182,7 +180,7 @@ def main() -> None:
         type=parse_samples_per_epoch,
         default=None,
         help="Examples drawn uniformly at random (without replacement) for each epoch. "
-        "Default ('all'): every example, shuffled.",
+        "Omit to use every example, shuffled.",
     )
     parser.add_argument(
         "--loss",

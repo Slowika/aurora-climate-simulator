@@ -137,9 +137,10 @@ If a job fails, resubmit it with the same prefix and it resumes from the newest 
 A checkpoint is refused if the learning rate, date window or model config differ; use a new
 prefix to start fresh. `epochs` may be raised on resume to extend a finished run.
 
-An epoch is normally every example in the window (about 38,000 steps for 1990-2015). Set
-`inputs.samples_per_epoch=100` to make each epoch draw 100 examples uniformly at random,
-without replacement, freshly for each epoch; the default `all` keeps the full pass. Epoch
+An epoch is normally every example in the window (about 38,000 steps for 1990-2015). To make
+each epoch draw a random subset instead, uncomment `samples_per_epoch` in the job YAML (in both
+places), e.g. `samples_per_epoch: 100`. Each epoch then draws 100 examples uniformly at random,
+without replacement, freshly for each epoch; leaving it out keeps the full pass. Epoch
 `e`'s draw depends only on `e`, so a resumed run repeats it exactly. A checkpoint is refused if
 `samples_per_epoch` differs, because the epochs would no longer mean the same thing.
 
