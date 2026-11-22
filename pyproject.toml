@@ -35,5 +35,5 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["./", "data"]
+pythonpath = ["./", "data", "components/train_aurora_cs"]
 addopts = "--import-mode=importlib"
