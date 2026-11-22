@@ -12,6 +12,8 @@ import xarray as xr
 from aurora import Batch, Metadata
 from aurora.normalisation import scales
 
+import training_data
+import training_losses
 from aurora_cs import AuroraCS
 from aurora_cs import training_checkpoint as ckpt
 from components.train_aurora_cs import train_aurora_cs as training
@@ -41,7 +43,7 @@ def target(prediction):
 
 
 def test_finite_loss_and_gradients_unchanged(prediction, target):
-    loss = training.step_loss(prediction, target)
+    loss = training_losses.step_loss(prediction, target)
     torch.testing.assert_close(loss, torch.tensor(1.0))
     loss.backward()
     for value in (*prediction.surf_vars.values(), *prediction.atmos_vars.values()):
@@ -56,14 +58,14 @@ def test_nonfinite_prediction_or_target_fails(prediction, target, group, name, s
     with torch.no_grad():
         values[name].fill_(bad_value)
     with pytest.raises(FloatingPointError, match=rf"{source}.{group}.{name} at 1990-01-01"):
-        training.step_loss(prediction, target)
+        training_losses.step_loss(prediction, target)
 
 
 def test_loss_overflow_is_rejected(prediction, target):
     with torch.no_grad():
         prediction.surf_vars["2t"].fill_(1e30)
     with pytest.raises(FloatingPointError, match="loss.surf_vars.2t"):
-        training.step_loss(prediction, target)
+        training_losses.step_loss(prediction, target)
 
 
 @pytest.mark.parametrize("bad_source", ["input", "forcing"])
@@ -71,13 +73,14 @@ def test_load_example_rejects_nonfinite_data(monkeypatch, prediction, target, tm
     if bad_source == "input":
         with torch.no_grad():
             prediction.atmos_vars["t"].fill_(float("nan"))
-    monkeypatch.setattr(training, "build_batch", lambda *args: prediction)
-    monkeypatch.setattr(training, "load_target", lambda *args: target)
+    monkeypatch.setattr(training_data, "build_batch", lambda *args: prediction)
+    monkeypatch.setattr(training_data, "load_target", lambda *args: target)
     monkeypatch.setattr(
-        training, "co2_ppm_for", lambda *args: float("nan") if bad_source == "forcing" else 350.0
+        training_data, "co2_ppm_for",
+        lambda *args: float("nan") if bad_source == "forcing" else 350.0,
     )
     with pytest.raises(FloatingPointError, match="input.atmos_vars.t|CO2 forcing"):
-        training.load_example(
+        training_data.load_example(
             tmp_path, {}, xr.Dataset(), pd.DataFrame(), pd.Timestamp("1990-01-01 06:00"),
             torch.device("cpu"),
         )
@@ -107,7 +110,7 @@ def test_main_fails_before_unsafe_work(monkeypatch, prediction, target, bad_stag
     model_factory = Mock(return_value=model)
     monkeypatch.setattr(training, "AuroraCS", model_factory)
     monkeypatch.setattr(model, "forward", lambda *args, **kwargs: prediction)
-    monkeypatch.setattr(training, "step_loss", lambda *args: model.weight * 1.0)
+    monkeypatch.setattr(training_losses, "step_loss", lambda *args: model.weight * 1.0)
     model.weight.register_hook(lambda grad: torch.full_like(grad, float("nan")))
     optimizer_step = Mock()
     monkeypatch.setattr(training.torch.optim.Adam, "step", optimizer_step)
@@ -191,8 +194,8 @@ def test_discover_examples_respects_inclusive_dates(era5_times, start_date, end_
 
 def test_date_filter_preserves_gap_detection(tmp_path, monkeypatch):
     times = pd.date_range("1995-01-01", periods=8, freq="6h").delete(3)
-    monkeypatch.setattr(training, "discover_times", lambda *_: list(times))
-    assert training.discover_examples(
+    monkeypatch.setattr(training_data, "discover_times", lambda *_: list(times))
+    assert training_data.discover_examples(
         tmp_path, {}, date(1995, 1, 1), date(1995, 1, 2)
     ) == [times[1], times[4], times[5]]
 
@@ -720,41 +723,50 @@ def pred_with_error(truth, *, std_errors=(), rows=None):
 def test_unit_error_everywhere_gives_loss_of_one():
     truth = _truth()
     pred = pred_with_error(truth, std_errors=SURF + ATMOS)
-    torch.testing.assert_close(training.normalised_step_loss(pred, truth), torch.tensor(1.0))
+    torch.testing.assert_close(training_losses.normalised_step_loss(pred, truth), torch.tensor(1.0))
 
 
 def test_perfect_prediction_gives_zero_loss():
     truth = _truth()
-    assert training.normalised_step_loss(pred_with_error(truth), truth).item() == pytest.approx(0, abs=1e-6)
+    loss = training_losses.normalised_step_loss(pred_with_error(truth), truth)
+    assert loss.item() == pytest.approx(0, abs=1e-6)
 
 
 @pytest.mark.parametrize("variable", ["z", "u", "q", "t"])
 def test_every_atmospheric_variable_counts_equally(variable):
     """An error of one standard deviation matters the same whatever the variable's units."""
     truth = _truth()
-    loss = training.normalised_step_loss(pred_with_error(truth, std_errors=(variable,)), truth)
+    loss = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=(variable,)), truth
+    )
     torch.testing.assert_close(loss, torch.tensor(1.0 / len(ATMOS) / 2))
 
 
 @pytest.mark.parametrize("variable", SURF)
 def test_every_surface_variable_counts_equally(variable):
     truth = _truth()
-    loss = training.normalised_step_loss(pred_with_error(truth, std_errors=(variable,)), truth)
+    loss = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=(variable,)), truth
+    )
     torch.testing.assert_close(loss, torch.tensor(1.0 / len(SURF) / 2))
 
 
 def test_raw_loss_is_dominated_by_large_valued_variables():
     """Documents the problem the normalised loss fixes."""
     truth = _truth()
-    humidity = training.step_loss(pred_with_error(truth, std_errors=("q",)), truth)
-    geopotential = training.step_loss(pred_with_error(truth, std_errors=("z",)), truth)
+    humidity = training_losses.step_loss(pred_with_error(truth, std_errors=("q",)), truth)
+    geopotential = training_losses.step_loss(pred_with_error(truth, std_errors=("z",)), truth)
     assert geopotential / humidity > 1e9
 
 
 def test_latitude_weighting_favours_the_equator():
     truth = _truth()
-    polar = training.normalised_step_loss(pred_with_error(truth, std_errors=("2t",), rows=[0]), truth)
-    equator = training.normalised_step_loss(pred_with_error(truth, std_errors=("2t",), rows=[1]), truth)
+    polar = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=("2t",), rows=[0]), truth
+    )
+    equator = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=("2t",), rows=[1]), truth
+    )
     torch.testing.assert_close(equator / polar, torch.tensor(2.0))
 
 
@@ -763,18 +775,21 @@ def test_non_finite_values_are_rejected():
     pred = pred_with_error(truth)
     pred.atmos_vars["q"][0, 0, 0, 0, 0] = float("nan")
     with pytest.raises(FloatingPointError, match="prediction.atmos_vars.q"):
-        training.normalised_step_loss(pred, truth)
+        training_losses.normalised_step_loss(pred, truth)
 
 
 def test_loss_selector():
     truth = _truth()
     pred = pred_with_error(truth, std_errors=("t",))
-    torch.testing.assert_close(training.compute_loss(pred, truth, "raw"), training.step_loss(pred, truth))
     torch.testing.assert_close(
-        training.compute_loss(pred, truth, "normalised"), training.normalised_step_loss(pred, truth)
+        training_losses.compute_loss(pred, truth, "raw"), training_losses.step_loss(pred, truth)
+    )
+    torch.testing.assert_close(
+        training_losses.compute_loss(pred, truth, "normalised"),
+        training_losses.normalised_step_loss(pred, truth),
     )
     with pytest.raises(ValueError, match="Unknown loss"):
-        training.compute_loss(pred, truth, "mae")
+        training_losses.compute_loss(pred, truth, "mae")
 
 
 def test_checkpoints_from_the_other_loss_are_refused(tmp_path):
