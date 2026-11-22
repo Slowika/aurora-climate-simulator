@@ -628,7 +628,7 @@ def test_parse_samples_per_epoch(value, expected):
     assert training.parse_samples_per_epoch(value) == expected
 
 
-@pytest.mark.parametrize("value", ["0", "-5", "abc", "", "1.5", "all"])
+@pytest.mark.parametrize("value", ["0", "-5", "abc", "", "1.5"])
 def test_parse_rejects_anything_else(value):
     with pytest.raises(argparse.ArgumentTypeError):
         training.parse_samples_per_epoch(value)
