@@ -621,12 +621,12 @@ def test_checkpoint_from_a_different_sample_size_is_refused(tmp_path):
         run_sampled(epochs=1, k=4, checkpoint_dir=tmp_path)
 
 
-@pytest.mark.parametrize("value,expected", [("all", None), ("100", 100), ("1", 1)])
+@pytest.mark.parametrize("value,expected", [("100", 100), ("1", 1)])
 def test_parse_samples_per_epoch(value, expected):
     assert training.parse_samples_per_epoch(value) == expected
 
 
-@pytest.mark.parametrize("value", ["0", "-5", "abc", "", "1.5", "ALL"])
+@pytest.mark.parametrize("value", ["0", "-5", "abc", "", "1.5", "all"])
 def test_parse_rejects_anything_else(value):
     with pytest.raises(argparse.ArgumentTypeError):
         training.parse_samples_per_epoch(value)
@@ -662,9 +662,8 @@ def test_main_passes_samples_per_epoch_and_records_it_in_the_fingerprint(monkeyp
     assert call.kwargs["fingerprint"]["samples_per_epoch"] == 100
 
 
-@pytest.mark.parametrize("extra", [(), ("--samples-per-epoch", "all")])
-def test_main_default_keeps_the_old_fingerprint(monkeypatch, extra):
-    call = invoke_main_capturing_train_loop(monkeypatch, *extra)
+def test_main_default_keeps_the_old_fingerprint(monkeypatch):
+    call = invoke_main_capturing_train_loop(monkeypatch)
     assert call.kwargs["samples_per_epoch"] is None
     assert "samples_per_epoch" not in call.kwargs["fingerprint"]
 
@@ -672,4 +671,4 @@ def test_main_default_keeps_the_old_fingerprint(monkeypatch, extra):
 def test_main_rejects_a_non_positive_sample_size(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         invoke_main_capturing_train_loop(monkeypatch, "--samples-per-epoch", "0")
-    assert "positive integer or 'all'" in capsys.readouterr().err
+    assert "expected a positive integer" in capsys.readouterr().err
