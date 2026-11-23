@@ -35,4 +35,4 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["./"]
+pythonpath = ["./", "components/train_aurora_cs"]
