@@ -90,7 +90,8 @@ Both register an Azure ML data asset.
 Run each once for a given date range, unless you are adding a disjoint range.
 A month interrupted part-way (for example by a failed job) is detected and fetched again on the
 next run, because a partly written shard still has its metadata but reads back as NaN where
-chunks are missing.
+chunks are missing. Training also checks the shards in its window before starting and fails
+with the list of damaged months.
 
 ```bash
 az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
@@ -117,7 +118,9 @@ The script discards the submitter-scoped tracking token so an expiring user PIM 
 does not interrupt long runs. Local training keeps its existing MLflow authentication.
 
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
-(1900-01-01, which contains missing data).
+(1900-01-01, which contains missing data). Training rejects non-finite static fields before
+loading the model, and checks weather inputs, forcing, targets, predictions, losses and
+gradients instead of continuing with NaNs.
 Previously fetched assets may contain an all-NaN `static.zarr`: fixing the fetcher does not
 repair existing blobs, and rerunning it skips an existing static shard. Regenerate that shard
 from a valid timestamp before retraining; the monthly weather shards need not be refetched.
