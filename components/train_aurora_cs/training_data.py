@@ -3,6 +3,7 @@
 import json
 import math
 import re
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -98,11 +99,21 @@ def load_target(era5_data: Path, cache: dict, when: pd.Timestamp, crop_h: int) -
     }
 
 
-def discover_examples(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
+def discover_examples(
+    era5_data: Path,
+    cache: dict,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[pd.Timestamp]:
     """The middle timestamp of every adjacent triple of 6-hourly steps in `era5_data`: the
     history window ends there and the next step is the target. Triples spanning a gap in
-    coverage (e.g. a non-contiguous fetch) are skipped."""
+    coverage (e.g. a non-contiguous fetch) are skipped. All three timestamps must fall
+    within the optional, inclusive date bounds."""
     times = discover_times(era5_data, cache)
+    if start_date is not None:
+        times = [t for t in times if t.date() >= start_date]
+    if end_date is not None:
+        times = [t for t in times if t.date() <= end_date]
     return [
         cur_t
         for prev_t, cur_t, next_t in zip(times, times[1:], times[2:])
