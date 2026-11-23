@@ -8,48 +8,40 @@
 #       --set inputs.start_date=2026-01-01 --set inputs.end_date=2026-02-28
 #
 # Runs `data.fetch_era5` in the `aurora-cs-data-env` environment (register it first with
-# `az ml environment create -f environment/data/environment.yml`), with the inputs below
+# `az ml environment create -f environments/data/environment.yml`), with the inputs below
 # forwarded as CLI args.
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 
-code: ../data
+display_name: fetch_era5
 
+code: ../data
+environment: azureml:aurora-cs-data-env@latest
 command: >-
   python fetch_era5.py
   --start-date ${{inputs.start_date}}
   --end-date ${{inputs.end_date}}
-  --prefix ${{inputs.prefix}}
-  --asset-name ${{inputs.asset_name}}
-  --datastore-name ${{inputs.datastore_name}}
-  --subscription-id ${{inputs.subscription_id}}
-  --resource-group ${{inputs.resource_group}}
-  --workspace-name ${{inputs.workspace_name}}
-  --managed-identity-client-id ${{inputs.managed_identity_client_id}}
-
-environment: azureml:aurora-cs-data-env@latest
-
-# The scripts authenticate to the workspace and its blob datastore as the compute's managed
-# identity; without this the job runs with no identity at all.
-identity:
-  type: managed
-
-compute: azureml:<COMPUTE_NAME>
-
-display_name: fetch_era5
-
-# Fetching a month of atmospheric data at 6-hourly cadence takes ~1.6h; leave generous headroom.
-limits:
-  timeout: 21600
+  --sharded ${{outputs.sharded}}
 
 inputs:
   start_date: <START_DATE>
   end_date: <END_DATE>
-  prefix: <PREFIX>
-  asset_name: <ASSET_NAME>
-  datastore_name: workspaceblobstore
-  subscription_id: <SUBSCRIPTION_ID>
-  resource_group: <RESOURCE_GROUP>
-  workspace_name: <WORKSPACE_NAME>
-  # Client ID of the compute's user-assigned identity. For a system-assigned identity, delete
-  # this input and the --managed-identity-client-id flag above (empty inputs are rejected).
-  managed_identity_client_id: <MANAGED_IDENTITY_CLIENT_ID>
+
+outputs:
+  sharded:
+    # uri_folder data asset versions are not frozen to snapshot as at creation
+    type: uri_folder
+    mode: rw_mount
+    # Azure ML URI of the output, should be stable across runs
+    # e.g., azureml://datastores/${{default_datastore}}/paths/era5_shards/
+    path: <OUTPUT_AZUREML_URI>
+    name: <AZUREML_DATA_ASSET_NAME>
+    # version optional, Azure ML auto-increments from 1 if absent
+    # version: <AZUREML_DATA_ASSET_VERSION>
+
+compute: azureml:<COMPUTE_NAME>
+# Azure ML uses the compute's managed identity to access the mounted output datastore.
+identity:
+  type: managed
+# Fetching a month of atmospheric data at 6-hourly cadence takes ~1.6h; leave generous headroom.
+limits:
+  timeout: 21600
