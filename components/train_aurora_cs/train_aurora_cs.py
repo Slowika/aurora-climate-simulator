@@ -56,6 +56,10 @@ MODEL_CONFIG = dict(
     embed_dim=256,
     num_heads=8,
     use_lora=False,
+    # CO2 in ppm is ~350-430 for the historical period; raw values make the first Adam step
+    # blow the loss up by orders of magnitude. Stored in the checkpoint, so rollout matches.
+    forcing_mean=350.0,
+    forcing_scale=100.0,
 )
 PATCH_SIZE = 4  # AuroraCS's default `patch_size`; history windows must be pre-cropped to it.
 SIX_HOURS = pd.Timedelta(hours=6)
@@ -201,7 +205,7 @@ def main() -> None:
     parser.add_argument("--co2-data", required=True)
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
