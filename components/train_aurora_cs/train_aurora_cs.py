@@ -31,7 +31,7 @@ from aurora_cs.training_checkpoint import (
 
 from training_constants import CHECKPOINT, MODEL_CONFIG, SIX_HOURS, STATIC_VAR_MAP
 from training_data import discover_examples, find_incomplete_shards, load_example, require_finite
-from training_losses import step_loss
+from training_losses import LOSS_KINDS, compute_loss
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -81,6 +81,7 @@ def train_loop(
     checkpoint_dir: str | None = None,
     checkpoint_every: int = 2000,
     fingerprint: dict | None = None,
+    loss_kind: str = "raw",
     samples_per_epoch: int | None = None,
     checkpoint_fs=None,
 ) -> None:
@@ -121,7 +122,7 @@ def train_loop(
             batch, forcing, target = get_example(cur_t)
             optimizer.zero_grad()
             pred = model(batch, forcing=forcing)
-            loss = step_loss(pred, target)
+            loss = compute_loss(pred, target, loss_kind)
             loss.backward()
             for name, param in model.named_parameters():
                 if param.grad is not None:
@@ -180,6 +181,13 @@ def main() -> None:
         default=None,
         help="Examples drawn uniformly at random (without replacement) for each epoch. "
         "Omit to use every example, shuffled.",
+    )
+    parser.add_argument(
+        "--loss",
+        choices=LOSS_KINDS,
+        default="raw",
+        help="'raw': MSE in physical units. 'normalised': per-variable/level scaled, "
+        "latitude-weighted, surface and atmosphere weighted equally.",
     )
     parser.add_argument(
         "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
@@ -253,6 +261,8 @@ def main() -> None:
         "first_example": str(examples[0]),
         "last_example": str(examples[-1]),
         "model_config": MODEL_CONFIG,
+        # Omitted for the original loss, so checkpoints made before `--loss` existed still resume.
+        **({"loss": args.loss} if args.loss != "raw" else {}),
         # Omitted when every example is used, so checkpoints made before `--samples-per-epoch`
         # existed still resume. Changing it changes which examples an epoch visits, so a
         # checkpoint's position would no longer mean the same.
@@ -268,6 +278,7 @@ def main() -> None:
         checkpoint_fs=checkpoint_fs,
         checkpoint_every=args.checkpoint_every,
         fingerprint=fingerprint,
+        loss_kind=args.loss,
         samples_per_epoch=args.samples_per_epoch,
     )
 

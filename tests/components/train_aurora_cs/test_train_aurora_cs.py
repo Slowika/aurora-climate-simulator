@@ -10,8 +10,10 @@ import pytest
 import torch
 import xarray as xr
 from aurora import Batch, Metadata
+from aurora.normalisation import scales
 
 import training_data
+import training_losses
 from aurora_cs import AuroraCS
 from aurora_cs import training_checkpoint as ckpt
 from components.train_aurora_cs import train_aurora_cs as training
@@ -41,7 +43,7 @@ def target(prediction):
 
 
 def test_finite_loss_and_gradients_unchanged(prediction, target):
-    loss = training.step_loss(prediction, target)
+    loss = training_losses.step_loss(prediction, target)
     torch.testing.assert_close(loss, torch.tensor(1.0))
     loss.backward()
     for value in (*prediction.surf_vars.values(), *prediction.atmos_vars.values()):
@@ -56,14 +58,14 @@ def test_nonfinite_prediction_or_target_fails(prediction, target, group, name, s
     with torch.no_grad():
         values[name].fill_(bad_value)
     with pytest.raises(FloatingPointError, match=rf"{source}.{group}.{name} at 1990-01-01"):
-        training.step_loss(prediction, target)
+        training_losses.step_loss(prediction, target)
 
 
 def test_loss_overflow_is_rejected(prediction, target):
     with torch.no_grad():
         prediction.surf_vars["2t"].fill_(1e30)
     with pytest.raises(FloatingPointError, match="loss.surf_vars.2t"):
-        training.step_loss(prediction, target)
+        training_losses.step_loss(prediction, target)
 
 
 @pytest.mark.parametrize("bad_source", ["input", "forcing"])
@@ -108,7 +110,7 @@ def test_main_fails_before_unsafe_work(monkeypatch, prediction, target, bad_stag
     model_factory = Mock(return_value=model)
     monkeypatch.setattr(training, "AuroraCS", model_factory)
     monkeypatch.setattr(model, "forward", lambda *args, **kwargs: prediction)
-    monkeypatch.setattr(training, "step_loss", lambda *args: model.weight * 1.0)
+    monkeypatch.setattr(training_losses, "step_loss", lambda *args: model.weight * 1.0)
     model.weight.register_hook(lambda grad: torch.full_like(grad, float("nan")))
     optimizer_step = Mock()
     monkeypatch.setattr(training.torch.optim.Adam, "step", optimizer_step)
@@ -672,3 +674,130 @@ def test_main_rejects_a_non_positive_sample_size(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         invoke_main_capturing_train_loop(monkeypatch, "--samples-per-epoch", "0")
     assert "expected a positive integer" in capsys.readouterr().err
+
+
+SURF = ("2t", "10u", "10v", "msl")
+ATMOS = ("z", "u", "v", "t", "q")
+LEVELS = (1000, 500)
+H, W = 3, 4
+
+
+def _batch(surf, atmos):
+    return Batch(
+        surf_vars=surf,
+        static_vars={},
+        atmos_vars=atmos,
+        metadata=Metadata(
+            lat=torch.tensor([60.0, 0.0, -60.0]),
+            lon=torch.linspace(0, 270, W),
+            time=(datetime(2000, 1, 1),),
+            atmos_levels=LEVELS,
+        ),
+    )
+
+
+def _truth():
+    surf = {n: torch.randn(1, 1, H, W) for n in SURF}
+    atmos = {n: torch.randn(1, 1, len(LEVELS), H, W) for n in ATMOS}
+    return {"surf_vars": surf, "atmos_vars": atmos}
+
+
+def _level_scales(name):
+    return torch.tensor([scales[f"{name}_{level}"] for level in LEVELS]).view(1, 1, -1, 1, 1)
+
+
+def pred_with_error(truth, *, std_errors=(), rows=None):
+    """Prediction that is off by one Aurora standard deviation in the given variables, in the
+    given latitude rows (all rows if `rows` is None)."""
+    row_mask = torch.zeros(H, 1)
+    row_mask[list(range(H)) if rows is None else rows] = 1.0
+    surf = {n: v + (scales[n] * row_mask if n in std_errors else 0) for n, v in truth["surf_vars"].items()}
+    atmos = {
+        n: v + (_level_scales(n) * row_mask if n in std_errors else 0)
+        for n, v in truth["atmos_vars"].items()
+    }
+    return _batch(surf, atmos)
+
+
+def test_unit_error_everywhere_gives_loss_of_one():
+    truth = _truth()
+    pred = pred_with_error(truth, std_errors=SURF + ATMOS)
+    torch.testing.assert_close(training_losses.normalised_step_loss(pred, truth), torch.tensor(1.0))
+
+
+def test_perfect_prediction_gives_zero_loss():
+    truth = _truth()
+    loss = training_losses.normalised_step_loss(pred_with_error(truth), truth)
+    assert loss.item() == pytest.approx(0, abs=1e-6)
+
+
+@pytest.mark.parametrize("variable", ["z", "u", "q", "t"])
+def test_every_atmospheric_variable_counts_equally(variable):
+    """An error of one standard deviation matters the same whatever the variable's units."""
+    truth = _truth()
+    loss = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=(variable,)), truth
+    )
+    torch.testing.assert_close(loss, torch.tensor(1.0 / len(ATMOS) / 2))
+
+
+@pytest.mark.parametrize("variable", SURF)
+def test_every_surface_variable_counts_equally(variable):
+    truth = _truth()
+    loss = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=(variable,)), truth
+    )
+    torch.testing.assert_close(loss, torch.tensor(1.0 / len(SURF) / 2))
+
+
+def test_raw_loss_is_dominated_by_large_valued_variables():
+    """Documents the problem the normalised loss fixes."""
+    truth = _truth()
+    humidity = training_losses.step_loss(pred_with_error(truth, std_errors=("q",)), truth)
+    geopotential = training_losses.step_loss(pred_with_error(truth, std_errors=("z",)), truth)
+    assert geopotential / humidity > 1e9
+
+
+def test_latitude_weighting_favours_the_equator():
+    truth = _truth()
+    polar = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=("2t",), rows=[0]), truth
+    )
+    equator = training_losses.normalised_step_loss(
+        pred_with_error(truth, std_errors=("2t",), rows=[1]), truth
+    )
+    torch.testing.assert_close(equator / polar, torch.tensor(2.0))
+
+
+def test_non_finite_values_are_rejected():
+    truth = _truth()
+    pred = pred_with_error(truth)
+    pred.atmos_vars["q"][0, 0, 0, 0, 0] = float("nan")
+    with pytest.raises(FloatingPointError, match="prediction.atmos_vars.q"):
+        training_losses.normalised_step_loss(pred, truth)
+
+
+def test_loss_selector():
+    truth = _truth()
+    pred = pred_with_error(truth, std_errors=("t",))
+    torch.testing.assert_close(
+        training_losses.compute_loss(pred, truth, "raw"), training_losses.step_loss(pred, truth)
+    )
+    torch.testing.assert_close(
+        training_losses.compute_loss(pred, truth, "normalised"),
+        training_losses.normalised_step_loss(pred, truth),
+    )
+    with pytest.raises(ValueError, match="Unknown loss"):
+        training_losses.compute_loss(pred, truth, "mae")
+
+
+def test_checkpoints_from_the_other_loss_are_refused(tmp_path):
+    model = torch.nn.Linear(2, 2)
+    optimizer = torch.optim.Adam(model.parameters())
+    ckpt.save_training_state(
+        tmp_path, model, optimizer, epoch=0, position=1, global_step=1, epoch_loss=0.0,
+        fingerprint={"lr": 1e-4, "loss": "normalised"},
+    )
+    state = ckpt.load_latest_training_state(tmp_path, torch.device("cpu"))
+    with pytest.raises(RuntimeError, match="loss"):
+        ckpt.restore_training_state(state, model, optimizer, {"lr": 1e-4})
