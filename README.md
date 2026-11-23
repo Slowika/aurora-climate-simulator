@@ -92,7 +92,8 @@ Both register an Azure ML data asset.
 Run each once for a given date range, unless you are adding a disjoint range.
 A month interrupted part-way (for example by a failed job) is detected and fetched again on the
 next run, because a partly written shard still has its metadata but reads back as NaN where
-chunks are missing.
+chunks are missing. Training also checks the shards in its window before starting and fails
+with the list of damaged months.
 
 ```bash
 az ml job create -f jobs/fetch_era5_job.yml --set name=fetch-era5-2020-01 \
@@ -118,8 +119,49 @@ In the context of Azure ML, it is this directory output that is registered as a 
 network on one-step prediction over the ERA5 window, and registers the result as a model in Azure
 ML.
 
+On Azure ML, training uses the compute's user-assigned managed identity for MLflow tracking
+and model registration, selected through `DEFAULT_IDENTITY_CLIENT_ID`. Give that identity
+AzureML Data Scientist on the workspace, in addition to its storage permissions.
+The script discards the submitter-scoped tracking token so an expiring user PIM activation
+does not interrupt long runs. Local training keeps its existing MLflow authentication.
+
+Use `inputs.start_date=1990-01-01 inputs.end_date=2015-12-31` to restrict training to
+those dates, inclusive. Both history steps and the target must lie inside the window.
+Each bound defaults to `unbounded`, preserving training on all available ERA5 timestamps.
+Filtering does not fetch missing ERA5 data: the asset must already contain the requested
+months, and missing/gapped examples are skipped. Ensure the CO2 CSV covers those months too.
+For multi-year training, increase `limits.timeout` from its two-hour default.
+
+Training writes resumable checkpoints (trainable weights, optimiser state and position in the
+epoch) every `checkpoint_every` steps, keeping the newest two. They go straight to blob storage
+as the compute's managed identity, not through a registered job output: registering an output at
+the end of a long job depends on the submitter's role, which failed once that role had expired.
+Set `inputs.checkpoint_prefix` (e.g. `checkpoints/aurora-cs-1990-2015`),
+`inputs.checkpoint_account` and `inputs.checkpoint_container` to a location in the workspace
+storage (`az ml datastore show -n workspaceblobstore` shows the account and container). The
+compute's identity needs Storage Blob Data Contributor there. Training checks it can write
+there before loading any data, so a permission problem shows up in the first minute.
+If a job fails, resubmit it with the same prefix and it resumes from the newest checkpoint.
+A checkpoint is refused if the learning rate, date window or model config differ; use a new
+prefix to start fresh. `epochs` may be raised on resume to extend a finished run.
+
+An epoch is normally every example in the window (about 38,000 steps for 1990-2015). To make
+each epoch draw a random subset instead, uncomment `samples_per_epoch` in the job YAML (in both
+places), e.g. `samples_per_epoch: 100`. Each epoch then draws 100 examples uniformly at random,
+without replacement, freshly for each epoch; leaving it out keeps the full pass. Epoch
+`e`'s draw depends only on `e`, so a resumed run repeats it exactly. A checkpoint is refused if
+`samples_per_epoch` differs, because the epochs would no longer mean the same thing.
+
+The default loss (`inputs.loss=raw`) is MSE in physical units, so geopotential and pressure
+dominate and humidity is effectively ignored. `inputs.loss=normalised` divides each error by
+Aurora's per-variable and per-level scale, weights rows by cos(latitude), and averages surface
+and atmospheric variables as two equally weighted groups. Use a separate model name and
+checkpoint path for each loss: a checkpoint from one loss is refused by the other.
+
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
-(1900-01-01, which contains missing data).
+(1900-01-01, which contains missing data). Training rejects non-finite static fields before
+loading the model, and checks weather inputs, forcing, targets, predictions, losses and
+gradients instead of continuing with NaNs.
 Previously fetched assets may contain an all-NaN `static.zarr`: fixing the fetcher does not
 repair existing blobs, and rerunning it skips an existing static shard.
 Regenerate that shard from a valid timestamp before retraining; the monthly weather shards need

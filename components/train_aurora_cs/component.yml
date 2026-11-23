@@ -6,7 +6,8 @@ type: command
 description: >-
   Train AuroraCS's forcing encoder and per-block adapters via one-step (single forward pass)
   prediction loss over every adjacent triple of 6-hourly ERA5 steps, and register the result
-  as a model asset.
+  as a model asset. Azure ML runs require a user-assigned compute identity with workspace
+  tracking and model-registration permissions.
 inputs:
   era5_data:
     type: uri_folder
@@ -23,8 +24,47 @@ inputs:
     description: Number of passes over all one-step training examples.
   lr:
     type: number
-    default: 0.001
+    default: 0.0001
     description: Adam learning rate.
+  checkpoint_prefix:
+    type: string
+    optional: true
+    description: >-
+      Blob path prefix for resumable checkpoints, written as the compute's identity. A rerun
+      with the same prefix resumes. Needs checkpoint_account and checkpoint_container.
+  checkpoint_account:
+    type: string
+    optional: true
+    description: Storage account holding the checkpoints.
+  checkpoint_container:
+    type: string
+    optional: true
+    description: Blob container holding the checkpoints.
+  checkpoint_every:
+    type: integer
+    default: 2000
+    description: Number of optimiser steps between resumable checkpoints.
+  loss:
+    type: string
+    default: raw
+    enum: [raw, normalised]
+    description: >-
+      raw = MSE in physical units; normalised = per-variable/level scaled, latitude-weighted,
+      with surface and atmospheric variables weighted equally.
+  samples_per_epoch:
+    type: integer
+    optional: true
+    description: >-
+      Examples drawn uniformly at random (without replacement) for each epoch. Omit to use
+      every example, shuffled.
+  start_date:
+    type: string
+    optional: true
+    description: First training date (YYYY-MM-DD), inclusive of history and target timestamps.
+  end_date:
+    type: string
+    optional: true
+    description: Last training date (YYYY-MM-DD), inclusive of history and target timestamps.
 code: .
 environment: azureml:aurora-cs-torch-env@latest
 command: >-
@@ -34,6 +74,14 @@ command: >-
   --model-name ${{inputs.model_name}}
   --epochs ${{inputs.epochs}}
   --lr ${{inputs.lr}}
+  $[[--checkpoint-prefix ${{inputs.checkpoint_prefix}}]]
+  $[[--checkpoint-account ${{inputs.checkpoint_account}}]]
+  $[[--checkpoint-container ${{inputs.checkpoint_container}}]]
+  --checkpoint-every ${{inputs.checkpoint_every}}
+  --loss ${{inputs.loss}}
+  $[[--samples-per-epoch ${{inputs.samples_per_epoch}}]]
+  $[[--start-date ${{inputs.start_date}}]]
+  $[[--end-date ${{inputs.end_date}}]]
 
 additional_includes:
   - ../../aurora_cs

@@ -12,179 +12,29 @@ import argparse
 import logging
 import random
 import tempfile
+from datetime import date
 from pathlib import Path
 
 import mlflow
 import pandas as pd
 import torch
-import torch.nn.functional as F
 import xarray as xr
 
-from aurora import Batch, Metadata
-from aurora_cs import AuroraCS, save_checkpoint
+from aurora_cs import AuroraCS, configure_mlflow_auth, save_checkpoint
+from aurora_cs.training_checkpoint import (
+    check_writable,
+    load_latest_training_state,
+    open_checkpoint_store,
+    restore_training_state,
+    save_training_state,
+)
+
+from training_constants import CHECKPOINT, MODEL_CONFIG, SIX_HOURS, STATIC_VAR_MAP
+from training_data import discover_examples, find_incomplete_shards, load_example, require_finite
+from training_losses import LOSS_KINDS, compute_loss
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-# Must match the variables `data/fetch_era5.py` writes into each monthly shard / static.zarr.
-SURF_VAR_MAP = {
-    "2t": "2m_temperature",
-    "10u": "10m_u_component_of_wind",
-    "10v": "10m_v_component_of_wind",
-    "msl": "mean_sea_level_pressure",
-}
-ATMOS_VAR_MAP = {
-    "t": "temperature",
-    "u": "u_component_of_wind",
-    "v": "v_component_of_wind",
-    "q": "specific_humidity",
-    "z": "geopotential",
-}
-STATIC_VAR_MAP = {
-    "lsm": "land_sea_mask",
-    "slt": "soil_type",
-    "z": "geopotential_at_surface",
-}
-
-CHECKPOINT = "aurora-0.25-small-pretrained.ckpt"
-# "AuroraSmallPretrained" architecture; stored with the registered model to rebuild it.
-MODEL_CONFIG = dict(
-    encoder_depths=(2, 6, 2),
-    encoder_num_heads=(4, 8, 16),
-    decoder_depths=(2, 6, 2),
-    decoder_num_heads=(16, 8, 4),
-    embed_dim=256,
-    num_heads=8,
-    use_lora=False,
-)
-PATCH_SIZE = 4  # AuroraCS's default `patch_size`; history windows must be pre-cropped to it.
-SIX_HOURS = pd.Timedelta(hours=6)
-
-
-def open_month(era5_data: Path, cache: dict, year: int, month: int) -> xr.Dataset:
-    """Open (and cache) one monthly shard."""
-    key = (year, month)
-    if key not in cache:
-        cache[key] = xr.open_zarr(str(era5_data / f"{year}-{month:02d}.zarr"), chunks=None)
-    return cache[key]
-
-
-def open_step(era5_data: Path, cache: dict, when: pd.Timestamp) -> xr.Dataset:
-    """The cached monthly shard containing `when`, sliced to that single timestep."""
-    return open_month(era5_data, cache, when.year, when.month).sel(time=when)
-
-
-def discover_times(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
-    """All timestamps present across `era5_data`'s monthly shards, sorted ascending."""
-    shard_names = sorted(
-        p.name for p in era5_data.iterdir() if p.suffix == ".zarr" and p.stem != "static"
-    )
-    times: list[pd.Timestamp] = []
-    for name in shard_names:
-        year, month = int(name[:4]), int(name[5:7])
-        times.extend(pd.Timestamp(t) for t in open_month(era5_data, cache, year, month).time.values)
-    return sorted(times)
-
-
-def co2_ppm_for(co2: pd.DataFrame, when: pd.Timestamp) -> float:
-    """Look up the monthly-mean CO2 ppm for `when`, falling back to the nearest month."""
-    exact = co2[(co2["time"].dt.year == when.year) & (co2["time"].dt.month == when.month)]
-    if len(exact):
-        return float(exact["co2_ppm"].iloc[0])
-    idx = (co2["time"] - when).abs().idxmin()
-    return float(co2.loc[idx, "co2_ppm"])
-
-
-def build_batch(era5_data: Path, cache: dict, static: xr.Dataset, when: pd.Timestamp) -> Batch:
-    """Aurora-ready 2-step history window ending at `when` (cropped to `PATCH_SIZE`)."""
-    history_times = [when - SIX_HOURS, when]
-    steps = [open_step(era5_data, cache, t) for t in history_times]
-    window = xr.concat(steps, dim="time")
-
-    # Aurora requires strictly decreasing latitude; flip if the source has it ascending.
-    lat = window.latitude.values
-    need_flip = lat[0] < lat[-1]
-
-    def to_tensor(arr) -> torch.Tensor:
-        values = arr.values
-        if need_flip:
-            values = values[..., ::-1, :]
-        return torch.from_numpy(values.copy())
-
-    def stacked(var_map: dict) -> dict:
-        return {short: to_tensor(window[long])[None] for short, long in var_map.items()}
-
-    return Batch(
-        surf_vars=stacked(SURF_VAR_MAP),
-        static_vars={short: to_tensor(static[long]) for short, long in STATIC_VAR_MAP.items()},
-        atmos_vars=stacked(ATMOS_VAR_MAP),
-        metadata=Metadata(
-            lat=torch.from_numpy(lat[::-1].copy() if need_flip else lat.copy()),
-            lon=torch.from_numpy(window.longitude.values.copy()),
-            time=(when.to_pydatetime(),),
-            atmos_levels=tuple(int(level) for level in window.level.values),
-        ),
-    ).crop(PATCH_SIZE)
-
-
-def load_target(era5_data: Path, cache: dict, when: pd.Timestamp, crop_h: int) -> dict:
-    """Load the ground-truth snapshot at `when`, cropped to match the model's output grid."""
-    step = open_step(era5_data, cache, when)
-    lat = step.latitude.values
-    need_flip = lat[0] < lat[-1]
-
-    def to_tensor(long_name: str) -> torch.Tensor:
-        values = step[long_name].values
-        if need_flip:
-            values = values[..., ::-1, :]
-        return torch.from_numpy(values[..., :crop_h, :].copy())[None, None]
-
-    return {
-        "surf_vars": {short: to_tensor(long) for short, long in SURF_VAR_MAP.items()},
-        "atmos_vars": {short: to_tensor(long) for short, long in ATMOS_VAR_MAP.items()},
-    }
-
-
-def discover_examples(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
-    """The middle timestamp of every adjacent triple of 6-hourly steps in `era5_data`: the
-    history window ends there and the next step is the target. Triples spanning a gap in
-    coverage (e.g. a non-contiguous fetch) are skipped."""
-    times = discover_times(era5_data, cache)
-    return [
-        cur_t
-        for prev_t, cur_t, next_t in zip(times, times[1:], times[2:])
-        if cur_t - prev_t == SIX_HOURS and next_t - cur_t == SIX_HOURS
-    ]
-
-
-def load_example(
-    era5_data: Path,
-    cache: dict,
-    static: xr.Dataset,
-    co2: pd.DataFrame,
-    cur_t: pd.Timestamp,
-    device: torch.device,
-) -> tuple[Batch, float, dict]:
-    """Load one training example on demand (so memory stays flat in the dataset size): the
-    2-step history window ending at `cur_t` on `device`, the CO2 forcing value for the next
-    step, and the ground-truth next step (left on the CPU)."""
-    next_t = cur_t + SIX_HOURS
-    batch = build_batch(era5_data, cache, static, cur_t).to(device)
-    target = load_target(era5_data, cache, next_t, batch.metadata.lat.shape[0])
-    return batch, co2_ppm_for(co2, next_t), target
-
-
-def step_loss(pred: Batch, target: dict) -> torch.Tensor:
-    """Mean MSE across all surf/atmos variables between a one-step prediction and a
-    ground-truth snapshot (as produced by `load_target`)."""
-    losses = [
-        F.mse_loss(pred.surf_vars[k], v.to(pred.surf_vars[k]))
-        for k, v in target["surf_vars"].items()
-    ] + [
-        F.mse_loss(pred.atmos_vars[k], v.to(pred.atmos_vars[k]))
-        for k, v in target["atmos_vars"].items()
-    ]
-    return torch.stack(losses).mean()
 
 
 def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
@@ -195,15 +45,174 @@ def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
     mlflow.register_model(f"{mlflow.active_run().info.artifact_uri}/model", model_name)
 
 
+def parse_date(value: str) -> date | None:
+    """Accept an ISO date or the command job template's explicit unbounded default."""
+    return None if value == "unbounded" else date.fromisoformat(value)
+
+
+def epoch_order(
+    examples: list[pd.Timestamp], epoch: int, samples_per_epoch: int | None = None
+) -> list[pd.Timestamp]:
+    """The examples visited in `epoch`, in order. Seeded by `epoch` alone, so a resumed run
+    visits exactly what an uninterrupted one would.
+
+    By default that is every example, shuffled. With `samples_per_epoch`, it is that many
+    examples drawn uniformly at random without replacement, freshly for each epoch.
+    """
+    rng = random.Random(epoch)
+    if samples_per_epoch is None:
+        order = list(examples)
+        rng.shuffle(order)
+        return order
+    if samples_per_epoch > len(examples):
+        raise ValueError(
+            f"samples_per_epoch={samples_per_epoch} exceeds the {len(examples)} available examples."
+        )
+    return rng.sample(examples, samples_per_epoch)
+
+
+def train_loop(
+    model: AuroraCS,
+    optimizer: torch.optim.Optimizer,
+    examples: list[pd.Timestamp],
+    get_example,
+    epochs: int,
+    *,
+    checkpoint_dir: str | None = None,
+    checkpoint_every: int = 2000,
+    fingerprint: dict | None = None,
+    loss_kind: str = "raw",
+    samples_per_epoch: int | None = None,
+    checkpoint_fs=None,
+) -> None:
+    """Train for `epochs`, resuming from the newest checkpoint in `checkpoint_dir` if present.
+
+    Each epoch visits the examples chosen by `epoch_order`. `get_example(cur_t)` returns
+    `(batch, forcing, target)`.
+    """
+    if samples_per_epoch is not None and samples_per_epoch > len(examples):
+        raise ValueError(
+            f"samples_per_epoch={samples_per_epoch} exceeds the {len(examples)} available examples."
+        )
+    fingerprint = fingerprint or {}
+    epoch_loss, position, global_step, start_epoch = 0.0, 0, 0, 0
+    if checkpoint_dir:
+        device = next(model.parameters()).device
+        state = load_latest_training_state(checkpoint_dir, device, checkpoint_fs)
+        if state:
+            restore_training_state(state, model, optimizer, fingerprint)
+            start_epoch, position = state["epoch"], state["position"]
+            global_step, epoch_loss = state["global_step"], state["epoch_loss"]
+            logger.info(f"Resumed at epoch {start_epoch}, example {position}, step {global_step}.")
+    last_saved = global_step if checkpoint_dir else None
+
+    def save(epoch: int, position: int) -> None:
+        nonlocal last_saved
+        save_training_state(
+            checkpoint_dir, model, optimizer, epoch=epoch, position=position,
+            global_step=global_step, epoch_loss=epoch_loss, fingerprint=fingerprint,
+            fs=checkpoint_fs,
+        )
+        last_saved = global_step
+
+    for epoch in range(start_epoch, epochs):
+        order = epoch_order(examples, epoch, samples_per_epoch)
+        for i in range(position, len(order)):
+            cur_t = order[i]
+            batch, forcing, target = get_example(cur_t)
+            optimizer.zero_grad()
+            pred = model(batch, forcing=forcing)
+            loss = compute_loss(pred, target, loss_kind)
+            loss.backward()
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    require_finite(
+                        param.grad,
+                        f"gradient.{name}, epoch={epoch}, step={global_step}, "
+                        f"target time={cur_t + SIX_HOURS}",
+                    )
+            optimizer.step()
+            mlflow.log_metric("loss", loss.item(), step=global_step)
+            epoch_loss += loss.item()
+            global_step += 1
+            if checkpoint_dir and global_step % checkpoint_every == 0:
+                save(epoch, i + 1)
+        if checkpoint_dir and last_saved != global_step:
+            save(epoch, len(order))
+        mean_loss = epoch_loss / len(order)
+        mlflow.log_metric("epoch_loss", mean_loss, step=epoch)
+        logger.info(f"  epoch {epoch}: mean loss = {mean_loss:.6f}")
+        epoch_loss, position = 0.0, 0
+
+
+def parse_samples_per_epoch(value: str) -> int:
+    """Validate the number of samples per epoch is a positive integer."""
+    try:
+        count = int(value)
+    except ValueError:
+        count = 0
+    if count < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got '{value}'")
+    return count
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--era5-data", required=True)
     parser.add_argument("--co2-data", required=True)
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--checkpoint-dir",
+        help="Local folder for resumable checkpoints; training resumes from the newest one found.",
+    )
+    parser.add_argument(
+        "--checkpoint-prefix",
+        help="Blob path prefix for resumable checkpoints, written as the compute's identity. "
+        "Needs --checkpoint-account and --checkpoint-container.",
+    )
+    parser.add_argument("--checkpoint-account", help="Storage account holding the checkpoints.")
+    parser.add_argument("--checkpoint-container", help="Blob container holding the checkpoints.")
+    parser.add_argument("--checkpoint-every", type=int, default=2000, help="Steps between checkpoints.")
+    parser.add_argument(
+        "--samples-per-epoch",
+        type=parse_samples_per_epoch,
+        default=None,
+        help="Examples drawn uniformly at random (without replacement) for each epoch. "
+        "Omit to use every example, shuffled.",
+    )
+    parser.add_argument(
+        "--loss",
+        choices=LOSS_KINDS,
+        default="raw",
+        help="'raw': MSE in physical units. 'normalised': per-variable/level scaled, "
+        "latitude-weighted, surface and atmosphere weighted equally.",
+    )
+    parser.add_argument(
+        "--start-date", type=parse_date, help="First training date, inclusive (YYYY-MM-DD)."
+    )
+    parser.add_argument(
+        "--end-date", type=parse_date, help="Last training date, inclusive (YYYY-MM-DD)."
+    )
     args = parser.parse_args()
+    if args.start_date is not None and args.end_date is not None and args.start_date > args.end_date:
+        parser.error("--start-date must be on or before --end-date")
+    try:
+        checkpoint_fs, checkpoint_path = open_checkpoint_store(
+            args.checkpoint_dir,
+            prefix=args.checkpoint_prefix,
+            account=args.checkpoint_account,
+            container=args.checkpoint_container,
+        )
+    except ValueError as e:
+        parser.error(str(e))
 
+    configure_mlflow_auth()
+    if checkpoint_fs is not None:
+        # Before any data loading or training, so a permission or network problem shows up now.
+        check_writable(checkpoint_fs, checkpoint_path)
+        logger.info(f"Checkpoints: {checkpoint_path} (writable)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
@@ -212,13 +221,26 @@ def main() -> None:
 
     cache: dict = {}
     static = xr.open_zarr(str(era5_data / "static.zarr"), chunks=None)
-    examples = discover_examples(era5_data, cache)
+    for name in STATIC_VAR_MAP.values():
+        require_finite(torch.as_tensor(static[name].values), f"ERA5 static.{name}")
+    examples = discover_examples(era5_data, cache, args.start_date, args.end_date)
     if not examples:
         raise RuntimeError(
-            "No adjacent-triple training examples found - era5_data needs at least 3 "
-            "consecutive 6-hourly steps."
+            "No adjacent-triple training examples found in the selected date range - "
+            "era5_data needs at least 3 consecutive 6-hourly steps within that range."
         )
     logger.info(f"Found {len(examples)} training example(s) in {era5_data}.")
+    logger.info(
+        f"Training history/target coverage: {examples[0] - SIX_HOURS} to "
+        f"{examples[-1] + SIX_HOURS}."
+    )
+    problems = find_incomplete_shards(era5_data, examples)
+    if problems:
+        details = "; ".join(f"{shard}: {', '.join(issues)}" for shard, issues in problems.items())
+        raise RuntimeError(
+            f"{len(problems)} ERA5 shard(s) in the training window are incomplete: {details}. "
+            "Fetch those months again with fetch_era5, or narrow --start-date/--end-date."
+        )
 
     logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
     model = AuroraCS(**MODEL_CONFIG).to(device)
@@ -227,25 +249,38 @@ def main() -> None:
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(trainable_params, lr=args.lr)
 
-    logger.info(f"Training for {args.epochs} epoch(s) over {len(examples)} example(s)...")
-    rng = random.Random(0)
-    global_step = 0
-    for epoch in range(args.epochs):
-        rng.shuffle(examples)
-        epoch_loss = 0.0
-        for cur_t in examples:
-            batch, forcing, target = load_example(era5_data, cache, static, co2, cur_t, device)
-            optimizer.zero_grad()
-            pred = model(batch, forcing=forcing)
-            loss = step_loss(pred, target)
-            loss.backward()
-            optimizer.step()
-            mlflow.log_metric("loss", loss.item(), step=global_step)
-            epoch_loss += loss.item()
-            global_step += 1
-        mean_loss = epoch_loss / len(examples)
-        mlflow.log_metric("epoch_loss", mean_loss, step=epoch)
-        logger.info(f"  epoch {epoch}: mean loss = {mean_loss:.6f}")
+    per_epoch = args.samples_per_epoch or len(examples)
+    logger.info(
+        f"Training for {args.epochs} epoch(s) of {per_epoch} example(s) each, "
+        f"from {len(examples)} available..."
+    )
+    # `epochs` is deliberately excluded so a finished run's checkpoint can be extended.
+    fingerprint = {
+        "lr": args.lr,
+        "num_examples": len(examples),
+        "first_example": str(examples[0]),
+        "last_example": str(examples[-1]),
+        "model_config": MODEL_CONFIG,
+        # Omitted for the original loss, so checkpoints made before `--loss` existed still resume.
+        **({"loss": args.loss} if args.loss != "raw" else {}),
+        # Omitted when every example is used, so checkpoints made before `--samples-per-epoch`
+        # existed still resume. Changing it changes which examples an epoch visits, so a
+        # checkpoint's position would no longer mean the same.
+        **({"samples_per_epoch": args.samples_per_epoch} if args.samples_per_epoch else {}),
+    }
+    train_loop(
+        model,
+        optimizer,
+        examples,
+        lambda cur_t: load_example(era5_data, cache, static, co2, cur_t, device),
+        args.epochs,
+        checkpoint_dir=checkpoint_path,
+        checkpoint_fs=checkpoint_fs,
+        checkpoint_every=args.checkpoint_every,
+        fingerprint=fingerprint,
+        loss_kind=args.loss,
+        samples_per_epoch=args.samples_per_epoch,
+    )
 
     logger.info(f"Registering trained model as '{args.model_name}'...")
     register_model(model, MODEL_CONFIG, args.model_name)
