@@ -53,5 +53,7 @@ settings:
 
 # Mount the input assets as the compute's managed identity (the storage account is AAD-only).
 # (OPTIONAL) use the identity.client_id field to specify a managed identity
+# Training also uses the compute's user-assigned identity for MLflow, not the submitter's
+# expiring run token. This identity needs AzureML Data Scientist on the workspace.
 identity:
   type: managed
