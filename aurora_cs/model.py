@@ -35,6 +35,8 @@ class AuroraCS(nn.Module):
         use_lora: bool = True,
         forcing_hidden_dim: int = 128,
         adapter_bottleneck_dim: int = 32,
+        forcing_mean: float = 0.0,
+        forcing_scale: float = 1.0,
         **aurora_kwargs,
     ) -> None:
         """Construct an instance of the model.
@@ -71,6 +73,11 @@ class AuroraCS(nn.Module):
                 forcing encoder and the per-block adapter heads. Keeps the helper network's
                 parameter count near the ~5-10M target instead of the ~10x larger cost of
                 per-block heads taking the full forcing embedding as input. Defaults to `32`.
+            forcing_mean (float, optional): Forcing values are standardised as
+                `(forcing - forcing_mean) / forcing_scale` before the forcing encoder. Raw values
+                of order 100s (e.g. CO2 in ppm) make a single optimiser step overshoot, so set
+                these to put the forcing near unit scale. Defaults to `0.0` (no shift).
+            forcing_scale (float, optional): See `forcing_mean`. Defaults to `1.0` (no scaling).
             **aurora_kwargs: Additional keyword arguments forwarded directly to `Aurora`, e.g.
                 `mlp_ratio`, `drop_rate`, `stochastic`, `variable_lead_time`.
         """
@@ -93,6 +100,8 @@ class AuroraCS(nn.Module):
             use_lora=use_lora,
             **aurora_kwargs,
         )
+        self.forcing_mean = forcing_mean
+        self.forcing_scale = forcing_scale
         for p in self.aurora.parameters():
             p.requires_grad_(False)
 
@@ -131,7 +140,8 @@ class AuroraCS(nn.Module):
         """
         batch_size = next(iter(batch.surf_vars.values())).shape[0]
         ref = next(self.forcing_encoder.parameters())
-        forcing_t = torch.full((batch_size, 1), float(forcing), device=ref.device, dtype=ref.dtype)
+        standardised = (float(forcing) - self.forcing_mean) / self.forcing_scale
+        forcing_t = torch.full((batch_size, 1), standardised, device=ref.device, dtype=ref.dtype)
 
         z = self.forcing_encoder(forcing_t)
 
