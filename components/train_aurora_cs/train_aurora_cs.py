@@ -17,178 +17,16 @@ from pathlib import Path
 import mlflow
 import pandas as pd
 import torch
-import torch.nn.functional as F
 import xarray as xr
 
-from aurora import Batch, Metadata
 from aurora_cs import AuroraCS, configure_mlflow_auth, save_checkpoint
+
+from training_constants import CHECKPOINT, MODEL_CONFIG, SIX_HOURS, STATIC_VAR_MAP
+from training_data import discover_examples, find_incomplete_shards, load_example, require_finite
+from training_losses import step_loss
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-# Must match the variables `data/fetch_era5.py` writes into each monthly shard / static.zarr.
-SURF_VAR_MAP = {
-    "2t": "2m_temperature",
-    "10u": "10m_u_component_of_wind",
-    "10v": "10m_v_component_of_wind",
-    "msl": "mean_sea_level_pressure",
-}
-ATMOS_VAR_MAP = {
-    "t": "temperature",
-    "u": "u_component_of_wind",
-    "v": "v_component_of_wind",
-    "q": "specific_humidity",
-    "z": "geopotential",
-}
-STATIC_VAR_MAP = {
-    "lsm": "land_sea_mask",
-    "slt": "soil_type",
-    "z": "geopotential_at_surface",
-}
-
-CHECKPOINT = "aurora-0.25-small-pretrained.ckpt"
-# "AuroraSmallPretrained" architecture; stored with the registered model to rebuild it.
-MODEL_CONFIG = dict(
-    encoder_depths=(2, 6, 2),
-    encoder_num_heads=(4, 8, 16),
-    decoder_depths=(2, 6, 2),
-    decoder_num_heads=(16, 8, 4),
-    embed_dim=256,
-    num_heads=8,
-    use_lora=False,
-    # CO2 in ppm is ~350-430 for the historical period; raw values make the first Adam step
-    # blow the loss up by orders of magnitude. Stored in the checkpoint, so rollout matches.
-    forcing_mean=350.0,
-    forcing_scale=100.0,
-)
-PATCH_SIZE = 4  # AuroraCS's default `patch_size`; history windows must be pre-cropped to it.
-SIX_HOURS = pd.Timedelta(hours=6)
-
-
-def open_month(era5_data: Path, cache: dict, year: int, month: int) -> xr.Dataset:
-    """Open (and cache) one monthly shard."""
-    key = (year, month)
-    if key not in cache:
-        cache[key] = xr.open_zarr(str(era5_data / f"{year}-{month:02d}.zarr"), chunks=None)
-    return cache[key]
-
-
-def open_step(era5_data: Path, cache: dict, when: pd.Timestamp) -> xr.Dataset:
-    """The cached monthly shard containing `when`, sliced to that single timestep."""
-    return open_month(era5_data, cache, when.year, when.month).sel(time=when)
-
-
-def discover_times(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
-    """All timestamps present across `era5_data`'s monthly shards, sorted ascending."""
-    shard_names = sorted(
-        p.name for p in era5_data.iterdir() if p.suffix == ".zarr" and p.stem != "static"
-    )
-    times: list[pd.Timestamp] = []
-    for name in shard_names:
-        year, month = int(name[:4]), int(name[5:7])
-        times.extend(pd.Timestamp(t) for t in open_month(era5_data, cache, year, month).time.values)
-    return sorted(times)
-
-
-def co2_ppm_for(co2: pd.DataFrame, when: pd.Timestamp) -> float:
-    """Look up the monthly-mean CO2 ppm for `when`, falling back to the nearest month."""
-    exact = co2[(co2["time"].dt.year == when.year) & (co2["time"].dt.month == when.month)]
-    if len(exact):
-        return float(exact["co2_ppm"].iloc[0])
-    idx = (co2["time"] - when).abs().idxmin()
-    return float(co2.loc[idx, "co2_ppm"])
-
-
-def build_batch(era5_data: Path, cache: dict, static: xr.Dataset, when: pd.Timestamp) -> Batch:
-    """Aurora-ready 2-step history window ending at `when` (cropped to `PATCH_SIZE`)."""
-    history_times = [when - SIX_HOURS, when]
-    steps = [open_step(era5_data, cache, t) for t in history_times]
-    window = xr.concat(steps, dim="time")
-
-    # Aurora requires strictly decreasing latitude; flip if the source has it ascending.
-    lat = window.latitude.values
-    need_flip = lat[0] < lat[-1]
-
-    def to_tensor(arr) -> torch.Tensor:
-        values = arr.values
-        if need_flip:
-            values = values[..., ::-1, :]
-        return torch.from_numpy(values.copy())
-
-    def stacked(var_map: dict) -> dict:
-        return {short: to_tensor(window[long])[None] for short, long in var_map.items()}
-
-    return Batch(
-        surf_vars=stacked(SURF_VAR_MAP),
-        static_vars={short: to_tensor(static[long]) for short, long in STATIC_VAR_MAP.items()},
-        atmos_vars=stacked(ATMOS_VAR_MAP),
-        metadata=Metadata(
-            lat=torch.from_numpy(lat[::-1].copy() if need_flip else lat.copy()),
-            lon=torch.from_numpy(window.longitude.values.copy()),
-            time=(when.to_pydatetime(),),
-            atmos_levels=tuple(int(level) for level in window.level.values),
-        ),
-    ).crop(PATCH_SIZE)
-
-
-def load_target(era5_data: Path, cache: dict, when: pd.Timestamp, crop_h: int) -> dict:
-    """Load the ground-truth snapshot at `when`, cropped to match the model's output grid."""
-    step = open_step(era5_data, cache, when)
-    lat = step.latitude.values
-    need_flip = lat[0] < lat[-1]
-
-    def to_tensor(long_name: str) -> torch.Tensor:
-        values = step[long_name].values
-        if need_flip:
-            values = values[..., ::-1, :]
-        return torch.from_numpy(values[..., :crop_h, :].copy())[None, None]
-
-    return {
-        "surf_vars": {short: to_tensor(long) for short, long in SURF_VAR_MAP.items()},
-        "atmos_vars": {short: to_tensor(long) for short, long in ATMOS_VAR_MAP.items()},
-    }
-
-
-def discover_examples(era5_data: Path, cache: dict) -> list[pd.Timestamp]:
-    """The middle timestamp of every adjacent triple of 6-hourly steps in `era5_data`: the
-    history window ends there and the next step is the target. Triples spanning a gap in
-    coverage (e.g. a non-contiguous fetch) are skipped."""
-    times = discover_times(era5_data, cache)
-    return [
-        cur_t
-        for prev_t, cur_t, next_t in zip(times, times[1:], times[2:])
-        if cur_t - prev_t == SIX_HOURS and next_t - cur_t == SIX_HOURS
-    ]
-
-
-def load_example(
-    era5_data: Path,
-    cache: dict,
-    static: xr.Dataset,
-    co2: pd.DataFrame,
-    cur_t: pd.Timestamp,
-    device: torch.device,
-) -> tuple[Batch, float, dict]:
-    """Load one training example on demand (so memory stays flat in the dataset size): the
-    2-step history window ending at `cur_t` on `device`, the CO2 forcing value for the next
-    step, and the ground-truth next step (left on the CPU)."""
-    next_t = cur_t + SIX_HOURS
-    batch = build_batch(era5_data, cache, static, cur_t).to(device)
-    target = load_target(era5_data, cache, next_t, batch.metadata.lat.shape[0])
-    return batch, co2_ppm_for(co2, next_t), target
-
-
-def step_loss(pred: Batch, target: dict) -> torch.Tensor:
-    """Mean MSE across all surf/atmos variables between a one-step prediction and a
-    ground-truth snapshot (as produced by `load_target`)."""
-    losses = [
-        F.mse_loss(pred.surf_vars[k], v.to(pred.surf_vars[k]))
-        for k, v in target["surf_vars"].items()
-    ] + [
-        F.mse_loss(pred.atmos_vars[k], v.to(pred.atmos_vars[k]))
-        for k, v in target["atmos_vars"].items()
-    ]
-    return torch.stack(losses).mean()
 
 
 def register_model(model: AuroraCS, config: dict, model_name: str) -> None:
@@ -217,6 +55,8 @@ def main() -> None:
 
     cache: dict = {}
     static = xr.open_zarr(str(era5_data / "static.zarr"), chunks=None)
+    for name in STATIC_VAR_MAP.values():
+        require_finite(torch.as_tensor(static[name].values), f"ERA5 static.{name}")
     examples = discover_examples(era5_data, cache)
     if not examples:
         raise RuntimeError(
@@ -224,6 +64,13 @@ def main() -> None:
             "consecutive 6-hourly steps."
         )
     logger.info(f"Found {len(examples)} training example(s) in {era5_data}.")
+    problems = find_incomplete_shards(era5_data, examples)
+    if problems:
+        details = "; ".join(f"{shard}: {', '.join(issues)}" for shard, issues in problems.items())
+        raise RuntimeError(
+            f"{len(problems)} ERA5 shard(s) in the training window are incomplete: {details}. "
+            "Fetch those months again with fetch_era5."
+        )
 
     logger.info("Building AuroraCS (AuroraSmallPretrained config) and loading its checkpoint...")
     model = AuroraCS(**MODEL_CONFIG).to(device)
@@ -244,6 +91,13 @@ def main() -> None:
             pred = model(batch, forcing=forcing)
             loss = step_loss(pred, target)
             loss.backward()
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    require_finite(
+                        param.grad,
+                        f"gradient.{name}, epoch={epoch}, step={global_step}, "
+                        f"target time={cur_t + SIX_HOURS}",
+                    )
             optimizer.step()
             mlflow.log_metric("loss", loss.item(), step=global_step)
             epoch_loss += loss.item()
