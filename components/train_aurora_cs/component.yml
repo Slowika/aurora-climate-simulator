@@ -44,6 +44,13 @@ inputs:
     type: integer
     default: 2000
     description: Number of optimiser steps between resumable checkpoints.
+  loss:
+    type: string
+    default: raw
+    enum: [raw, normalised]
+    description: >-
+      raw = MSE in physical units; normalised = per-variable/level scaled, latitude-weighted,
+      with surface and atmospheric variables weighted equally.
   samples_per_epoch:
     type: integer
     optional: true
@@ -71,6 +78,7 @@ command: >-
   $[[--checkpoint-account ${{inputs.checkpoint_account}}]]
   $[[--checkpoint-container ${{inputs.checkpoint_container}}]]
   --checkpoint-every ${{inputs.checkpoint_every}}
+  --loss ${{inputs.loss}}
   $[[--samples-per-epoch ${{inputs.samples_per_epoch}}]]
   $[[--start-date ${{inputs.start_date}}]]
   $[[--end-date ${{inputs.end_date}}]]
