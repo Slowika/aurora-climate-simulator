@@ -6,7 +6,8 @@ type: command
 description: >-
   Train AuroraCS's forcing encoder and per-block adapters via one-step (single forward pass)
   prediction loss over every adjacent triple of 6-hourly ERA5 steps, and register the result
-  as a model asset.
+  as a model asset. Azure ML runs require a user-assigned compute identity with workspace
+  tracking and model-registration permissions.
 inputs:
   era5_data:
     type: uri_folder

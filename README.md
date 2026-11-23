@@ -110,6 +110,12 @@ az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2
 network on one-step prediction over the ERA5 window, and registers the result as a model in Azure
 ML.
 
+On Azure ML, training uses the compute's user-assigned managed identity for MLflow tracking
+and model registration, selected through `DEFAULT_IDENTITY_CLIENT_ID`. Give that identity
+AzureML Data Scientist on the workspace, in addition to its storage permissions.
+The script discards the submitter-scoped tracking token so an expiring user PIM activation
+does not interrupt long runs. Local training keeps its existing MLflow authentication.
+
 Static ERA5 fields are selected at the fetch start date, not the archive's first timestamp
 (1900-01-01, which contains missing data).
 Previously fetched assets may contain an all-NaN `static.zarr`: fixing the fetcher does not
