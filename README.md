@@ -107,6 +107,11 @@ az ml job create -f jobs/fetch_co2_forcing_job.yml --set name=fetch-co2-ssp245-2
   --set inputs.scenario=ssp245 inputs.output_path=co2.csv inputs.asset_name=co2-forcing
 ```
 
+For ERA5 fetching, the `sharded` CLI argument and Azure ML job output represent the directory to
+which monthly shards of Zarr-formatted data will be written.
+In the context of Azure ML, it is this directory output that is registered as a data asset.
+
+
 ### 2. Train
 
 `jobs/train_aurora_cs_job.yml` downloads the pretrained Aurora checkpoint, trains the conditioning
